@@ -83,6 +83,41 @@ function harness(overrides: Partial<WorkerEditSessionOptions<string, string, str
 }
 
 describe('worker edit session', () => {
+  it('discards rejected pushed frames and acknowledgements before they reach the presenter', async () => {
+    const discarded: string[] = [];
+    const h = harness({ discardFrame(candidate) { discarded.push(candidate.payload); } }, true);
+    h.events!.push({ coversThroughSeq: 1, revision: 1, payload: 'ahead' });
+    const first = h.session.submit('insert', 'a');
+    h.pump();
+    h.ack(0, undefined, { incarnation: 99,
+      frame: { coversThroughSeq: 1, revision: 2, payload: 'wrong incarnation' } });
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+    expect(discarded).toEqual(['ahead', 'wrong incarnation']);
+    expect(h.frames).toEqual([]);
+    await h.session.dispose();
+    expect(await first.presented).toBe('dropped');
+  });
+
+  it('discards late edit replies, full-frame replies, and pushes after disposal', async () => {
+    const discarded: string[] = [];
+    const h = harness({ discardFrame(candidate) { discarded.push(candidate.payload); } }, true);
+    const first = h.session.submit('insert', 'a');
+    const second = h.session.submit('insert', 'b');
+    h.pump();
+    h.ack(0, undefined, { frame: { coversThroughSeq: 1, revision: 1, baseRevision: 99, payload: 'delta' } });
+    await first.ack;
+    expect(h.fullRequests).toBe(1);
+    await h.session.dispose();
+    h.ack(1, undefined, { frame: { coversThroughSeq: 2, revision: 2, payload: 'late edit' } });
+    h.full.resolve({ ...h.connection.initial, throughSeq: 1,
+      frame: { coversThroughSeq: 1, revision: 3, payload: 'late full' } });
+    h.events!.push({ coversThroughSeq: 1, revision: 4, payload: 'late push' }, true);
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+    expect(discarded).toEqual(['delta', 'late push', 'late edit', 'late full']);
+    expect(h.frames).toEqual([]);
+    expect(await second.presented).toBe('dropped');
+  });
+
   for (const rejection of ['returns false', 'throws'] as const) {
     it(`keeps transactional tickets and coverage waiters pending when an ack or pushed frame hook ${rejection}`, async () => {
       for (const pushed of [false, true]) {
@@ -618,7 +653,9 @@ describe('worker edit session', () => {
     const reopened = deferred<CommandConnection<string, string, string, string>>();
     const replayStarted = deferred<void>();
     const replay = deferred<Ack>();
-    const h = harness({ sameCoverageFrames: true, recovery: { reopen: () => reopened.promise } }, true);
+    const discarded: string[] = [];
+    const h = harness({ sameCoverageFrames: true, recovery: { reopen: () => reopened.promise },
+      discardFrame(candidate) { discarded.push(candidate.payload); } }, true);
     const ticket = h.session.submit('insert', 'a');
     h.pump();
     h.events!.push({ coversThroughSeq: 0, revision: 1, payload: 'first' });
@@ -657,6 +694,7 @@ describe('worker edit session', () => {
     await h.session.dispose();
     events.push({ coversThroughSeq: 1, revision: 5, payload: 'disposed' }, true);
     expect(events.unsubscribes).toBe(1);
+    expect(discarded).toEqual(['closed', 'recovering', 'replaced', 'terminal', 'disposed']);
     expect(h.frames.map((frame) => frame.payload)).toEqual(['first', 'reopen', 'replayed', 'live']);
     const disposed = harness({ sameCoverageFrames: true }, true);
     await disposed.session.dispose();

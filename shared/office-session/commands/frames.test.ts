@@ -38,6 +38,135 @@ function painters() {
   return { echo, paints, drops, presents };
 }
 
+function bitmapFrame(coversThroughSeq: number, revision: number, baseRevision?: number) {
+  const closes = [0, 0];
+  const payload = closes.map((_, index) => ({ close() { closes[index]! += 1; } }) as ImageBitmap);
+  const candidate: FrameEnvelope<ImageBitmap[]> = { coversThroughSeq, revision, baseRevision, payload };
+  return { candidate, closes };
+}
+
+for (const rejection of ['older coverage', 'older revision', 'same coverage disabled', 'base mismatch', 'disposed'] as const) {
+  test(`closes every bitmap once on ${rejection} and leaves accepted frames owned by the painter`, () => {
+    const accepted = bitmapFrame(1, 10);
+    const rejected = bitmapFrame(rejection === 'older coverage' ? 0 : rejection === 'base mismatch' ? 2 : 1,
+      rejection === 'older revision' ? 9 : 11, rejection === 'base mismatch' ? 99 : undefined);
+    let requests = 0;
+    const presenter = createPresenter<string, ImageBitmap[]>({
+      sameCoverageFrames: rejection !== 'same coverage disabled', now: () => 0,
+      requestFullFrame() { requests += 1; },
+      discardFrame(candidate) { candidate.payload.forEach((bitmap) => bitmap.close()); },
+    });
+    expect(presenter.present(accepted.candidate)).toBe('presented');
+    if (rejection === 'disposed') presenter.dispose();
+    expect(presenter.present(rejected.candidate)).toBe(rejection === 'base mismatch' ? 'base-mismatch' : 'stale');
+    expect(rejected.closes).toEqual([1, 1]);
+    expect(accepted.closes).toEqual([0, 0]);
+    expect(requests).toBe(rejection === 'base mismatch' ? 1 : 0);
+  });
+}
+
+for (const rejection of ['returns false', 'throws', 'reset', 'dispose'] as const) {
+  test(`closes every bitmap when a transactional install ${rejection}`, () => {
+    const rejected = bitmapFrame(1, 11);
+    let presenter!: Presenter<string, ImageBitmap[]>;
+    presenter = createPresenter<string, ImageBitmap[]>({
+      transactionalPresentation: true, now: () => 0, requestFullFrame() {},
+      discardFrame(candidate) { candidate.payload.forEach((bitmap) => bitmap.close()); },
+      echo: {
+        paint() {}, drop() {},
+        present() {
+          if (rejection === 'throws') throw new Error('install failed');
+          if (rejection === 'returns false') return false;
+          if (rejection === 'reset') presenter.reset();
+          else presenter.dispose();
+        },
+      },
+    });
+    expect(presenter.present(rejected.candidate)).toBe('stale');
+    expect(rejected.closes).toEqual([1, 1]);
+  });
+}
+
+test('closes superseded nested frames without closing the successful transactional frame', () => {
+  const accepted = bitmapFrame(2, 12);
+  const rejected = bitmapFrame(1, 11);
+  let presenter!: Presenter<string, ImageBitmap[]>;
+  presenter = createPresenter<string, ImageBitmap[]>({
+    transactionalPresentation: true, now: () => 0, requestFullFrame() {},
+    discardFrame(candidate) { candidate.payload.forEach((bitmap) => bitmap.close()); },
+    echo: {
+      paint() {}, drop() {},
+      present() { expect(presenter.present(rejected.candidate)).toBe('stale'); },
+    },
+  });
+  expect(presenter.present(accepted.candidate)).toBe('presented');
+  expect(rejected.closes).toEqual([1, 1]);
+  expect(accepted.closes).toEqual([0, 0]);
+});
+
+test('closes a rejected delta even when requesting a full frame throws', () => {
+  const rejected = bitmapFrame(1, 11, 99);
+  const presenter = createPresenter<string, ImageBitmap[]>({
+    requestFullFrame() { throw new Error('request failed'); },
+    discardFrame(candidate) { candidate.payload.forEach((bitmap) => bitmap.close()); },
+  });
+  expect(() => presenter.present(rejected.candidate)).toThrow('request failed');
+  expect(rejected.closes).toEqual([1, 1]);
+});
+
+test('closes bitmaps after a failed cosmetic paint while preserving its coverage semantics', () => {
+  for (const sameCoverage of [false, true]) {
+    const accepted = bitmapFrame(0, 10);
+    const rejected = bitmapFrame(sameCoverage ? 0 : 1, 11);
+    const presenter = createPresenter<string, ImageBitmap[]>({
+      sameCoverageFrames: true, now: () => 0, requestFullFrame() {},
+      discardFrame(candidate) { candidate.payload.forEach((bitmap) => bitmap.close()); },
+      echo: {
+        paint() {}, drop() {},
+        present(candidate) { if (candidate.revision === 11) throw new Error('paint failed'); },
+      },
+    });
+    presenter.present(accepted.candidate);
+    expect(presenter.present(rejected.candidate)).toBe('presented');
+    expect(presenter.presentedThroughSeq).toBe(rejected.candidate.coversThroughSeq);
+    expect(rejected.closes).toEqual([1, 1]);
+    expect(accepted.closes).toEqual([0, 0]);
+  }
+});
+
+test('preserves opt-in same-coverage frames and pending echo without discarding their bitmaps', () => {
+  const first = bitmapFrame(0, 10);
+  const redraw = bitmapFrame(0, 11, 10);
+  const installs: number[] = [];
+  const presenter = createPresenter<string, ImageBitmap[]>({
+    sameCoverageFrames: true, now: () => 0, requestFullFrame() {},
+    discardFrame(candidate) { candidate.payload.forEach((bitmap) => bitmap.close()); },
+    echo: { paint() {}, drop() {}, present(candidate) { installs.push(candidate.revision); } },
+  });
+  const entry = { ticket: ticket(1, 1).value, value: 'pending' };
+  presenter.present(first.candidate);
+  presenter.add(entry);
+  expect(presenter.present(redraw.candidate)).toBe('presented');
+  expect(installs).toEqual([10, 11]);
+  expect(presenter.revision).toBe(11);
+  expect(presenter.pending).toEqual([entry]);
+  expect(redraw.closes).toEqual([0, 0]);
+});
+
+test('isolates a throwing discard hook from rejection and full-frame requests', () => {
+  let discards = 0;
+  let requests = 0;
+  const presenter = createPresenter<string, string>({
+    requestFullFrame() { requests += 1; },
+    discardFrame() { discards += 1; throw new Error('discard failed'); },
+  });
+  expect(presenter.present(frame(1, 11, 99))).toBe('base-mismatch');
+  presenter.dispose();
+  expect(presenter.present(frame(2, 12))).toBe('stale');
+  expect(discards).toBe(2);
+  expect(requests).toBe(1);
+});
+
 for (const rejection of ['returns false', 'throws'] as const) {
   test(`keeps transactional coverage, revision, echo, and waiters unchanged when the hook ${rejection}`, async () => {
     const hooks = painters();

@@ -101,6 +101,35 @@ async function turns() {
 }
 
 describe('worker edit recovery', () => {
+  it('discards an initial recovery frame returned after disposal', async () => {
+    const discarded: string[] = [];
+    const h = harness({ discardFrame(candidate) { discarded.push(candidate.payload); } });
+    h.first.fail();
+    expect(h.reopens).toHaveLength(1);
+    await h.session.dispose();
+    const next = h.reopen(0);
+    await turns();
+    expect(discarded).toEqual(['open']);
+    expect(next.disposals).toBe(1);
+  });
+
+  it('discards a replay frame returned after its connection was disposed', async () => {
+    const discarded: string[] = [];
+    const h = harness({ discardFrame(candidate) { discarded.push(candidate.payload); } });
+    const ticket = h.session.submit('insert', 'a');
+    void ticket.ack.catch(() => {});
+    h.pump();
+    h.first.fail();
+    const next = h.reopen(0);
+    await turns();
+    expect(next.edits).toHaveLength(1);
+    await h.session.dispose();
+    next.ack(0, { frame: { coversThroughSeq: 1, revision: 1, payload: 'late replay' } });
+    await turns();
+    expect(discarded).toEqual(['late replay']);
+    expect(await ticket.presented).toBe('dropped');
+  });
+
   it('cancels a queued descendant when an acknowledged ancestor RPC rejects with recovery disabled', async () => {
     const h = harness({ maxRecoveryAttempts: 0, maxInFlight: 2 });
     const first = h.session.submit('insert', 'a');

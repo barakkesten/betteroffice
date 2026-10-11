@@ -148,59 +148,72 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
 
   function present(frame: FrameEnvelope<F>): FrameDisposition {
     return event(() => {
-      const sameCoverage = frame.coversThroughSeq === coverage;
-      if (disposed || frame.coversThroughSeq < coverage || (sameCoverage &&
-        (!options.sameCoverageFrames || coverage < 0 || revision === undefined || frame.revision <= revision))) return 'stale';
-      if (installing && (frame.coversThroughSeq < installing.coverage ||
-        (frame.coversThroughSeq === installing.coverage &&
-          (!options.sameCoverageFrames || frame.revision <= installing.revision)))) return 'stale';
-      if (frame.baseRevision !== undefined && frame.baseRevision !== revision) {
-        options.requestFullFrame();
-        return 'base-mismatch';
-      }
-      if (options.transactionalPresentation && options.echo) return presentTransactional(frame, sameCoverage);
-      if (sameCoverage) {
-        revision = frame.revision;
-        if (options.echo) paint('present', () => options.echo!.present(frame, [], pending));
-        if (disposed) return 'stale';
-        return 'presented';
-      }
-      const retired: EchoEntry<X>[] = [];
-      const remaining: EchoEntry<X>[] = [];
-      const previousCoverage = coverage;
-      const previousPaintedCoverage = paintedCoverage;
-      for (const entry of pending) {
-        const seq = entry.seq ?? entry.ticket.seq;
-        (seq !== undefined && seq <= frame.coversThroughSeq ? retired : remaining).push(entry);
-      }
-      pending = remaining;
-      coverage = frame.coversThroughSeq;
-      revision = frame.revision;
-      const painted = !options.echo || paint('present', () => options.echo!.present(frame, retired, remaining));
-      if (disposed) return 'stale';
-      const throughSeq = Math.min(coverage, frame.coversThroughSeq);
-      if (painted) paintedCoverage = Math.max(paintedCoverage, throughSeq);
-      if (!painted) {
-        for (const entry of retired) {
+      let retained = false;
+      try {
+        const sameCoverage = frame.coversThroughSeq === coverage;
+        if (disposed || frame.coversThroughSeq < coverage || (sameCoverage &&
+          (!options.sameCoverageFrames || coverage < 0 || revision === undefined || frame.revision <= revision))) return 'stale';
+        if (installing && (frame.coversThroughSeq < installing.coverage ||
+          (frame.coversThroughSeq === installing.coverage &&
+            (!options.sameCoverageFrames || frame.revision <= installing.revision)))) return 'stale';
+        if (frame.baseRevision !== undefined && frame.baseRevision !== revision) {
+          options.requestFullFrame();
+          return 'base-mismatch';
+        }
+        if (options.transactionalPresentation && options.echo) {
+          const disposition = presentTransactional(frame, sameCoverage);
+          retained = disposition === 'presented';
+          return disposition;
+        }
+        if (sameCoverage) {
+          revision = frame.revision;
+          const painted = !options.echo || paint('present', () => options.echo!.present(frame, [], pending));
+          if (disposed) return 'stale';
+          retained = painted;
+          return 'presented';
+        }
+        const retired: EchoEntry<X>[] = [];
+        const remaining: EchoEntry<X>[] = [];
+        const previousCoverage = coverage;
+        const previousPaintedCoverage = paintedCoverage;
+        for (const entry of pending) {
           const seq = entry.seq ?? entry.ticket.seq;
-          if (seq !== undefined && seq <= frame.coversThroughSeq &&
-            (paintedCoverage === previousPaintedCoverage || seq > paintedCoverage)) recordDrop(seq);
+          (seq !== undefined && seq <= frame.coversThroughSeq ? retired : remaining).push(entry);
         }
-      }
-      for (const seq of waiters.keys()) {
-        if (seq > throughSeq) continue;
+        pending = remaining;
+        coverage = frame.coversThroughSeq;
+        revision = frame.revision;
+        const painted = !options.echo || paint('present', () => options.echo!.present(frame, retired, remaining));
+        if (disposed) return 'stale';
+        const throughSeq = Math.min(coverage, frame.coversThroughSeq);
+        if (painted) paintedCoverage = Math.max(paintedCoverage, throughSeq);
         if (!painted) {
-          if (seq > previousCoverage) recordDrop(seq);
-        } else settle(seq, dropped.has(seq) ? 'dropped' : 'presented');
-      }
-      if (!painted) {
-        for (let seq = Math.max(previousCoverage + 1, paintedCoverage + 1, throughSeq - MAX_DROPPED_SEQS + 1);
-          seq <= throughSeq; seq += 1) {
-          recordDrop(seq);
+          for (const entry of retired) {
+            const seq = entry.seq ?? entry.ticket.seq;
+            if (seq !== undefined && seq <= frame.coversThroughSeq &&
+              (paintedCoverage === previousPaintedCoverage || seq > paintedCoverage)) recordDrop(seq);
+          }
+        }
+        for (const seq of waiters.keys()) {
+          if (seq > throughSeq) continue;
+          if (!painted) {
+            if (seq > previousCoverage) recordDrop(seq);
+          } else settle(seq, dropped.has(seq) ? 'dropped' : 'presented');
+        }
+        if (!painted) {
+          for (let seq = Math.max(previousCoverage + 1, paintedCoverage + 1, throughSeq - MAX_DROPPED_SEQS + 1);
+            seq <= throughSeq; seq += 1) {
+            recordDrop(seq);
+          }
+        }
+        settledCoverage = Math.max(settledCoverage, throughSeq);
+        retained = painted;
+        return 'presented';
+      } finally {
+        if (!retained) {
+          try { options.discardFrame?.(frame); } catch {}
         }
       }
-      settledCoverage = Math.max(settledCoverage, throughSeq);
-      return 'presented';
     });
   }
 

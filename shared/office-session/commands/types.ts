@@ -271,6 +271,8 @@ export type FrameDisposition = 'presented' | 'stale' | 'base-mismatch';
 /** @internal Pure presenter hooks, echo bound, and injectable painter clock. */
 export type PresenterOptions<X, F> = {
   echo?: EchoHooks<X, F>;
+  /** @internal Releases rejected frame resources; accepted frames belong to the painter. */
+  discardFrame?(frame: FrameEnvelope<F>): void;
   sameCoverageFrames?: boolean;
   /** @internal Commits presentation only after the echo hook accepts it; off by default. */
   transactionalPresentation?: boolean;
@@ -331,6 +333,8 @@ export type WorkerEditSessionOptions<O, P, S, E, F, X> = {
   connection: CommandConnection<P, S, E, F>;
   recovery: RecoveryHooks<O, P, S, E, F>;
   echo?: EchoHooks<X, F>;
+  /** @internal Releases rejected frame resources; accepted frames belong to the painter. */
+  discardFrame?(frame: FrameEnvelope<F>): void;
   sameCoverageFrames?: boolean;
   /** @internal Commits presentation only after the echo hook accepts it; off by default. */
   transactionalPresentation?: boolean;

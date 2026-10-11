@@ -158,12 +158,18 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     sameCoverageFrames: options.sameCoverageFrames,
     transactionalPresentation: options.transactionalPresentation,
     echoOverflow: options.echoOverflow,
+    discardFrame,
     onEchoOverrun: options.onEchoOverrun,
     requestFullFrame: () => requestFullFrame(frameCoverage, frameRevision),
   });
 
   function live(record: ConnectionRecord<P, S, E, F>): boolean {
     return !disposed && !terminal && record.active && connection === record;
+  }
+
+  function discardFrame(frame: FrameEnvelope<F> | undefined): void {
+    if (frame === undefined) return;
+    try { options.discardFrame?.(frame); } catch {}
   }
 
   function publish(): void {
@@ -350,18 +356,25 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
   }
 
   function acceptAck(record: ConnectionRecord<P, S, E, F>, ack: CommandAck<S, E, F>, replay = false): boolean {
-    if (!live(record)) return false;
+    const frame = ack?.frame;
+    if (!live(record)) { discardFrame(frame); return false; }
     if (!isCommandAck(ack)) {
+      discardFrame(frame);
       fail(new SessionFailure('message', 'Malformed command acknowledgement'));
       return false;
     }
-    if (ack.session !== sessionId || ack.incarnation !== incarnation || ack.epoch !== epoch) return false;
+    if (ack.session !== sessionId || ack.incarnation !== incarnation || ack.epoch !== epoch) {
+      discardFrame(ack.frame);
+      return false;
+    }
     if (ack.throughSeq > highSeq || (ack.frame && ack.frame.coversThroughSeq > highSeq) ||
       ack.outcomes.some((outcome) => outcome.seq > ack.throughSeq)) {
+      discardFrame(ack.frame);
       fail(new SessionFailure('message', 'Command acknowledgement exceeds sent coverage'));
       return false;
     }
     let frameRejected = false;
+    let frameHandled = false;
     try {
       presenter.event(() => {
         for (const outcome of ack.outcomes) {
@@ -382,11 +395,15 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
           state = { ...state, editState: ack.editState };
           editStateThroughSeq = ack.throughSeq;
         }
-        if (ack.frame) frameRejected = presentFrame(ack.frame);
+        if (ack.frame) {
+          frameHandled = true;
+          frameRejected = presentFrame(ack.frame);
+        }
         if (maxAttempts === 0 && cancellations.size === 0) pruneLog(state.throughSeq, true);
         publish();
       });
     } catch (error) {
+      if (!frameHandled) discardFrame(ack.frame);
       terminate(error instanceof SessionFailure ? error : new SessionFailure('message',
         error instanceof Error ? error.message : String(error)));
       return false;
@@ -421,13 +438,14 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
   }
 
   function acceptFrame(record: ConnectionRecord<P, S, E, F>, frame: FrameEnvelope<F>): void {
-    if (!live(record) || recovering) return;
+    if (!live(record) || recovering) { discardFrame(frame); return; }
     if (frame === undefined || !isCommandAck({ session: sessionId, incarnation, epoch,
       throughSeq: state.throughSeq, version: state.version, outcomes: [], frame })) {
+      discardFrame(frame);
       fail(new SessionFailure('message', 'Malformed command frame'));
       return;
     }
-    if (frame.coversThroughSeq > state.throughSeq) return;
+    if (frame.coversThroughSeq > state.throughSeq) { discardFrame(frame); return; }
     try {
       presenter.event(() => { presentFrame(frame); publish(); });
     } catch (error) {
@@ -554,7 +572,10 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       }
       try {
         void record.connection.client.call.edit(cloneData(envelope)).then(
-          (ack) => finish(() => resolve(ack)), (error) => finish(() => reject(error))
+          (ack) => {
+            if (settled) discardFrame(ack?.frame);
+            else finish(() => resolve(ack));
+          }, (error) => finish(() => reject(error))
         );
       } catch (error) { finish(() => reject(error)); }
     });
@@ -578,6 +599,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
           replayAppliedSeqs: [...log.values()].filter((entry) => isCommittedApplied(entry.outcome)).map((entry) => entry.envelope.seq),
         });
         if (disposed || terminal) {
+          discardFrame(next.initial?.frame);
           try { await next.client.dispose(); } catch {}
           return;
         }
@@ -587,9 +609,13 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
           opened.epoch !== epoch ||
           opened.throughSeq !== (checkpoint?.throughSeq ?? initial.throughSeq) ||
           opened.version !== (checkpoint?.version ?? initial.version)) {
+          discardFrame(opened?.frame);
           throw new SessionFailure('message', 'Reopened command connection has invalid initial state');
         }
-        if (next.client.failure) throw next.client.failure;
+        if (next.client.failure) {
+          discardFrame(opened.frame);
+          throw next.client.failure;
+        }
         presenter.reset();
         uncoveredPresentations.clear();
         for (const [seq, entry] of presentations) {
@@ -667,7 +693,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     const requestedRevision = record.fullFrameRevision!;
     try {
       void options.requestFullFrame(record.connection).then((ack) => {
-        if (!live(record)) return;
+        if (!live(record)) { discardFrame(ack?.frame); return; }
         const previousCoverage = presenter.presentedThroughSeq;
         const frameRejected = acceptAck(record, ack);
         record.fullFrameBusy = false;
@@ -846,7 +872,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       retainedBytes += logged.bytes;
       void record.connection.client.call.edit(cloneData(logged.envelope)).then((ack) => {
         try {
-          if (live(record)) acceptAck(record, ack);
+          acceptAck(record, ack);
         } finally { settleRpc(logged); }
       }, (error) => {
         try {
