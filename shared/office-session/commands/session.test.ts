@@ -83,6 +83,33 @@ function harness(overrides: Partial<WorkerEditSessionOptions<string, string, str
 }
 
 describe('worker edit session', () => {
+  for (const transactionalPresentation of [false, true]) {
+    it(`releases a painter-owned frame once when a ${transactionalPresentation ? 'transactional' : 'cosmetic'} presentation overrun disposes the session`, async () => {
+      let closes = 0;
+      let clock = 0;
+      let installed = false;
+      const bitmap = { close() { closes += 1; } } as ImageBitmap;
+      const h = harness({
+        transactionalPresentation, now: () => clock,
+        echo: {
+          paint() {}, drop() {},
+          present() { installed = true; clock += 3; },
+        },
+        discardFrame() { bitmap.close(); },
+        onEchoOverrun(sample) {
+          expect(sample.hook).toBe('present');
+          void h.session.dispose();
+          if (installed) { bitmap.close(); installed = false; }
+        },
+      }, true);
+      h.events!.push({ coversThroughSeq: 0, revision: 1, payload: 'bitmap' });
+      await h.session.dispose();
+      expect(h.disposals).toBe(1);
+      expect(installed).toBe(false);
+      expect(closes).toBe(1);
+    });
+  }
+
   it('discards rejected pushed frames and acknowledgements before they reach the presenter', async () => {
     const discarded: string[] = [];
     const h = harness({ discardFrame(candidate) { discarded.push(candidate.payload); } }, true);

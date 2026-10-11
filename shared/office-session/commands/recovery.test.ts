@@ -101,6 +101,27 @@ async function turns() {
 }
 
 describe('worker edit recovery', () => {
+  for (const registration of ['onFailure', 'onFrame'] as const) {
+    it(`discards the initial recovery frame once when ${registration} registration throws`, async () => {
+      const discarded: string[] = [];
+      const h = harness({ maxRecoveryAttempts: 1, discardFrame(candidate) { discarded.push(candidate.payload); } });
+      h.first.fail();
+      const next = worker(h.reopens[0]!.input.incarnation);
+      let unsubscribes = 0;
+      next.connection.client.onFailure = () => () => { unsubscribes += 1; };
+      next.connection.client[registration] = () => { throw new Error('registration failed'); };
+      h.reopens[0]!.reply.resolve(next.connection);
+      await turns();
+      expect(next.disposals).toBe(1);
+      expect(unsubscribes).toBe(registration === 'onFrame' ? 1 : 0);
+      expect(discarded).toEqual(['open']);
+      expect(h.events[h.events.length - 1]?.phase).toBe('failed');
+      await h.session.dispose();
+      expect(next.disposals).toBe(1);
+      expect(discarded).toEqual(['open']);
+    });
+  }
+
   it('discards an initial recovery frame returned after disposal', async () => {
     const discarded: string[] = [];
     const h = harness({ discardFrame(candidate) { discarded.push(candidate.payload); } });

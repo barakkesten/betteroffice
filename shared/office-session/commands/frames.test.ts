@@ -45,6 +45,47 @@ function bitmapFrame(coversThroughSeq: number, revision: number, baseRevision?: 
   return { candidate, closes };
 }
 
+for (const transactionalPresentation of [false, true]) {
+  for (const sameCoverage of [false, true]) {
+    for (const action of ['reset', 'dispose'] as const) {
+      test(`preserves painter ownership after ${transactionalPresentation ? 'transactional' : 'cosmetic'} ${sameCoverage ? 'same' : 'advancing'} coverage overrun ${action}`, () => {
+        const first = bitmapFrame(0, 10);
+        const next = bitmapFrame(sameCoverage ? 0 : 1, 11);
+        let clock = 0;
+        let overruns = 0;
+        let installed: FrameEnvelope<ImageBitmap[]> | undefined;
+        let presenter!: Presenter<string, ImageBitmap[]>;
+        presenter = createPresenter<string, ImageBitmap[]>({
+          transactionalPresentation, sameCoverageFrames: true,
+          now: () => clock, requestFullFrame() {},
+          discardFrame(candidate) { candidate.payload.forEach((bitmap) => bitmap.close()); },
+          echo: {
+            paint() {}, drop() {},
+            present(candidate) {
+              installed?.payload.forEach((bitmap) => bitmap.close());
+              installed = candidate;
+              if (candidate.revision === 11) clock += 3;
+            },
+          },
+          onEchoOverrun(sample) {
+            expect(sample.hook).toBe('present');
+            overruns += 1;
+            presenter[action]();
+          },
+        });
+        presenter.present(first.candidate);
+        expect(presenter.present(next.candidate)).toBe(transactionalPresentation || action === 'dispose' ? 'stale' : 'presented');
+        expect(overruns).toBe(1);
+        expect(installed).toBe(next.candidate);
+        expect(first.closes).toEqual([1, 1]);
+        expect(next.closes).toEqual([0, 0]);
+        installed!.payload.forEach((bitmap) => bitmap.close());
+        expect(next.closes).toEqual([1, 1]);
+      });
+    }
+  }
+}
+
 for (const rejection of ['older coverage', 'older revision', 'same coverage disabled', 'base mismatch', 'disposed'] as const) {
   test(`closes every bitmap once on ${rejection} and leaves accepted frames owned by the painter`, () => {
     const accepted = bitmapFrame(1, 10);
@@ -66,8 +107,9 @@ for (const rejection of ['older coverage', 'older revision', 'same coverage disa
 }
 
 for (const rejection of ['returns false', 'throws', 'reset', 'dispose'] as const) {
-  test(`closes every bitmap when a transactional install ${rejection}`, () => {
-    const rejected = bitmapFrame(1, 11);
+  const succeeds = rejection === 'reset' || rejection === 'dispose';
+  test(`${succeeds ? 'preserves painter ownership' : 'closes every bitmap'} when a transactional install ${rejection}`, () => {
+    const attempted = bitmapFrame(1, 11);
     let presenter!: Presenter<string, ImageBitmap[]>;
     presenter = createPresenter<string, ImageBitmap[]>({
       transactionalPresentation: true, now: () => 0, requestFullFrame() {},
@@ -82,8 +124,12 @@ for (const rejection of ['returns false', 'throws', 'reset', 'dispose'] as const
         },
       },
     });
-    expect(presenter.present(rejected.candidate)).toBe('stale');
-    expect(rejected.closes).toEqual([1, 1]);
+    expect(presenter.present(attempted.candidate)).toBe('stale');
+    expect(attempted.closes).toEqual(succeeds ? [0, 0] : [1, 1]);
+    if (succeeds) {
+      attempted.candidate.payload.forEach((bitmap) => bitmap.close());
+      expect(attempted.closes).toEqual([1, 1]);
+    }
   });
 }
 

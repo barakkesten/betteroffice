@@ -113,7 +113,10 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
     });
   }
 
-  function presentTransactional(frame: FrameEnvelope<F>, sameCoverage: boolean): FrameDisposition {
+  function presentTransactional(
+    frame: FrameEnvelope<F>, sameCoverage: boolean,
+    install: (retired: readonly EchoEntry<X>[], remaining: readonly EchoEntry<X>[]) => boolean
+  ): FrameDisposition {
     const retired: EchoEntry<X>[] = [];
     const remaining: EchoEntry<X>[] = [];
     for (const entry of pending) {
@@ -124,11 +127,7 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
     const generation = resetGeneration;
     installing = { coverage: frame.coversThroughSeq, revision: frame.revision };
     try {
-      let accepted = false;
-      const painted = paint('present', () => {
-        accepted = options.echo!.present(frame, retired, remaining) !== false;
-      });
-      if (!painted || !accepted || disposed || generation !== resetGeneration) return 'stale';
+      if (!install(retired, remaining) || disposed || generation !== resetGeneration) return 'stale';
       coverage = Math.max(coverage, frame.coversThroughSeq);
       revision = revision === undefined ? frame.revision : Math.max(revision, frame.revision);
       if (sameCoverage) return 'presented';
@@ -149,6 +148,14 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
   function present(frame: FrameEnvelope<F>): FrameDisposition {
     return event(() => {
       let retained = false;
+      function install(retired: readonly EchoEntry<X>[], remaining: readonly EchoEntry<X>[]): boolean {
+        if (!options.echo) { retained = true; return true; }
+        const painted = paint('present', () => {
+          const result = options.echo!.present(frame, retired, remaining);
+          retained = !options.transactionalPresentation || result !== false;
+        });
+        return painted && retained;
+      }
       try {
         const sameCoverage = frame.coversThroughSeq === coverage;
         if (disposed || frame.coversThroughSeq < coverage || (sameCoverage &&
@@ -161,15 +168,12 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
           return 'base-mismatch';
         }
         if (options.transactionalPresentation && options.echo) {
-          const disposition = presentTransactional(frame, sameCoverage);
-          retained = disposition === 'presented';
-          return disposition;
+          return presentTransactional(frame, sameCoverage, install);
         }
         if (sameCoverage) {
           revision = frame.revision;
-          const painted = !options.echo || paint('present', () => options.echo!.present(frame, [], pending));
+          install([], pending);
           if (disposed) return 'stale';
-          retained = painted;
           return 'presented';
         }
         const retired: EchoEntry<X>[] = [];
@@ -183,7 +187,7 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
         pending = remaining;
         coverage = frame.coversThroughSeq;
         revision = frame.revision;
-        const painted = !options.echo || paint('present', () => options.echo!.present(frame, retired, remaining));
+        const painted = install(retired, remaining);
         if (disposed) return 'stale';
         const throughSeq = Math.min(coverage, frame.coversThroughSeq);
         if (painted) paintedCoverage = Math.max(paintedCoverage, throughSeq);
@@ -207,7 +211,6 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
           }
         }
         settledCoverage = Math.max(settledCoverage, throughSeq);
-        retained = painted;
         return 'presented';
       } finally {
         if (!retained) {

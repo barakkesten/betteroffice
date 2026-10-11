@@ -588,6 +588,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       incarnation += 1;
       report('recovering', failure);
       if (disposed || terminal) return;
+      let initialFrame: FrameEnvelope<F> | undefined;
       try {
         if (cancellationDone) await cancellationDone.promise;
         if (disposed || terminal) return;
@@ -598,24 +599,22 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
           refusedSeqs: blockedSeqs.values(),
           replayAppliedSeqs: [...log.values()].filter((entry) => isCommittedApplied(entry.outcome)).map((entry) => entry.envelope.seq),
         });
+        const opened = next.initial;
+        initialFrame = opened?.frame;
         if (disposed || terminal) {
-          discardFrame(next.initial?.frame);
+          discardFrame(initialFrame);
+          initialFrame = undefined;
           try { await next.client.dispose(); } catch {}
           return;
         }
         const record = attach(next);
-        const opened = next.initial;
         if (!isCommandAck(opened) || opened.session !== sessionId || opened.incarnation !== incarnation ||
           opened.epoch !== epoch ||
           opened.throughSeq !== (checkpoint?.throughSeq ?? initial.throughSeq) ||
           opened.version !== (checkpoint?.version ?? initial.version)) {
-          discardFrame(opened?.frame);
           throw new SessionFailure('message', 'Reopened command connection has invalid initial state');
         }
-        if (next.client.failure) {
-          discardFrame(opened.frame);
-          throw next.client.failure;
-        }
+        if (next.client.failure) throw next.client.failure;
         presenter.reset();
         uncoveredPresentations.clear();
         for (const [seq, entry] of presentations) {
@@ -628,6 +627,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
         };
         selectionThroughSeq = opened.throughSeq;
         editStateThroughSeq = opened.throughSeq;
+        initialFrame = undefined;
         acceptAck(record, opened);
         const entries = [...log.values()].sort((a, b) => a.envelope.seq - b.envelope.seq);
         for (const entry of entries) {
@@ -663,6 +663,8 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
         if (connection) void close(connection, failure);
         if (disposed || terminal) return;
         if (!recoverable(failure)) break;
+      } finally {
+        discardFrame(initialFrame);
       }
     }
     if (!disposed && !terminal) terminate(failure);
