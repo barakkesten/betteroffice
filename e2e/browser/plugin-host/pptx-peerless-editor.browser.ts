@@ -175,7 +175,6 @@ test('peer-less paste replaces the selected text exactly once', async ({ page, c
 });
 
 test('peer-less copy and paste transfer selected text between slides', async ({ page, context }) => {
-  test.fixme(true, 'Peer-less copy does not write selected text to the clipboard.');
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await open(page);
   await select(page, 0, 7);
@@ -192,7 +191,6 @@ test('peer-less copy and paste transfer selected text between slides', async ({ 
 });
 
 test('peer-less cut copies before removing selected text and undo restores it', async ({ page, context }) => {
-  test.fixme(true, 'Peer-less cut does not write selected text to the clipboard.');
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await open(page);
   await select(page, 0, 7);
