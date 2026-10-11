@@ -144,6 +144,7 @@ export class CollaborationProvider {
   private readonly incoming: { token: number; data: Uint8Array }[] = [];
   private incomingBytes = 0;
   private incomingBusy = false;
+  private asyncReplica = false;
   private incomingGeneration = 0;
   private isFlushing = false;
   private localClock = 0;
@@ -489,7 +490,10 @@ export class CollaborationProvider {
     };
     try {
       const result = operation();
-      if (result instanceof Promise) return result.then(finish, fail).catch(fail);
+      if (result instanceof Promise) {
+        this.asyncReplica = true;
+        return result.then(finish, fail).catch(fail);
+      }
       finish(result);
     } catch (cause) { fail(cause); }
   }
@@ -546,7 +550,7 @@ export class CollaborationProvider {
   }
 
   private enqueueMessage(token: number, data: Uint8Array): void {
-    if (this.incomingBytes + data.byteLength > this.maxPendingBytes) {
+    if (this.asyncReplica && this.incomingBytes + data.byteLength > this.maxPendingBytes) {
       this.failConnection(token, new CollaborationError('backpressure', 'Incoming collaboration queue is full'));
       return;
     }

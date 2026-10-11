@@ -180,6 +180,22 @@ class FakeCommandClient implements PresentationCommandClient {
   }
 }
 
+test('refused local input surfaces through onError exactly once', async () => {
+  const client = new FakeCommandClient();
+  const onError = mock((_error: Error) => {});
+  const store = createPeerlessViewStore(client, { paintFrame() {}, paintEcho() {}, restoreLine() {} }, { onError });
+  try {
+    const input = store.dispatch(insert('NEXT'));
+    const ack = client.ack(1, { selection: selection(), dirtySlideIds: [], outcomes: [
+      { seq: 1, status: 'refused', reason: 'stale-basis', committed: false },
+    ] });
+    await input;
+    client.ack(1, ack);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0].message).toContain('stale-basis');
+  } finally { store.dispose(); }
+});
+
 function insert(text: string, afterSeq?: number, position = 1): PresentationCommandIntent {
   return { kind: 'insertText', payload: { text, inputTime: 100, undoGroup: 'typing',
     at: afterSeq === undefined ? { source: 'confirmed', selection: selection(position) }

@@ -5,7 +5,7 @@ import {
 import type {
   PresentationCommandAck, PresentationCommandBasis, PresentationCommandClient, PresentationCommandEditState,
   PresentationCommandFrame, PresentationCommandFailure, PresentationCommandIntent,
-  PresentationCommandMotion, PresentationCommandSelected, PresentationCommandSelection, PresentationCommandSelectionReference,
+  PresentationCommandMotion, PresentationCommandOutcome, PresentationCommandSelected, PresentationCommandSelection, PresentationCommandSelectionReference,
   CommandGeometryLine, CommandRect, SlideDisplayList, PositionedTextRun,
 } from '@betteroffice/pptx';
 import { measureEchoPosition } from './localEchoPainter';
@@ -50,6 +50,7 @@ export interface PeerlessViewSnapshot {
   caret: PeerlessRect | null;
   selectionRects: readonly PeerlessRect[];
   composition: PeerlessComposition | null;
+  inputFailure?: PeerlessCommandRefusedError;
   echo: PeerlessEcho | null;
   activeLine: PeerlessActiveLine | null;
   activeContextBytes: number;
@@ -130,9 +131,16 @@ export class PeerlessFrameDecodeError extends Error {
   }
 }
 
+export class PeerlessCommandRefusedError extends Error {
+  override readonly name = 'PeerlessCommandRefusedError';
+  constructor(readonly operation: PresentationCommandIntent['kind'], readonly outcome: PresentationCommandOutcome) {
+    super(`Presentation ${operation} refused: ${outcome.reason}`);
+  }
+}
+
 export function createPeerlessViewStore(
   client: PresentationCommandClient, painters: PeerlessViewPainters,
-  { echoEnabled = false, onError }: { echoEnabled?: boolean; onError?(error: PeerlessFrameDecodeError): void } = {},
+  { echoEnabled = false, onError }: { echoEnabled?: boolean; onError?(error: PeerlessFrameDecodeError | PeerlessCommandRefusedError): void } = {},
 ): PeerlessViewStore {
   const initial = client.state;
   const identity = { session: initial.session, incarnation: initial.incarnation, epoch: initial.epoch };
@@ -299,12 +307,22 @@ export function createPeerlessViewStore(
       return;
     }
     const changedState = JSON.stringify(view.editState) !== JSON.stringify(ack.editState);
+    const remoteHistory = view.pending.some((record) => record.seq === ack.historyThroughSeq && record.intent.kind === 'applyRemoteUpdate');
+    const refusals = view.pending.flatMap((record) => {
+      const outcome = ack.outcomes.find((entry) => entry.seq === record.seq);
+      return outcome?.reason && (outcome.status === 'refused' || outcome.status === 'cancelled')
+        ? [new PeerlessCommandRefusedError(record.intent.kind, outcome)] : [];
+    });
     if (ack.historyThroughSeq === ack.throughSeq) {
       localOnlySelection = false;
       localSelectionSeq = ack.throughSeq;
-      compositionVisible = false;
-      view = { ...view, selection: ack.selection, composition: null };
-      if (ack.activeSlideId !== null && ack.activeSlideId !== undefined) {
+      const composition = remoteHistory && view.composition && ack.selection && ack.selection.kind !== 'object' &&
+        ack.selection.storyId === view.composition.selection?.storyId
+        ? { ...view.composition, selection: ack.selection } : null;
+      if (!composition) compositionVisible = false;
+      view = { ...view, selection: ack.selection, composition };
+      if (ack.activeSlideId !== null && ack.activeSlideId !== undefined &&
+        (!remoteHistory || ack.activeSlideId !== view.confirmed?.frame.slideId)) {
         navigationReply = { seq: ack.throughSeq, slideId: ack.activeSlideId };
       }
     }
@@ -340,8 +358,10 @@ export function createPeerlessViewStore(
       const input = waiting[index];
       if (!rejectedInputs.has(input)) continue;
       waiting.splice(index, 1);
-      input.resolve({ ...ack, outcomes: [{ seq: sharedInput ? lastSentSeq + index + 1 : input.seq,
-        status: 'cancelled', reason: 'dependency-refused', committed: false }] });
+      const outcome: PresentationCommandOutcome = { seq: sharedInput ? lastSentSeq + index + 1 : input.seq,
+        status: 'cancelled', reason: 'dependency-refused', committed: false };
+      refusals.push(new PeerlessCommandRefusedError(input.intent.kind, outcome));
+      input.resolve({ ...ack, outcomes: [outcome] });
     }
     if (!sharedInput) {
       const sequences = new Map(waiting.map((input, index) => [input.seq, lastSentSeq + index + 1]));
@@ -381,11 +401,13 @@ export function createPeerlessViewStore(
       replies.clear(); echoContexts.clear();
     }
     view = { ...view, thumbnails, dirtyThumbnailIds };
+    if (refusals.length) view = { ...view, inputFailure: refusals[refusals.length - 1] };
     if (ack.slides || ack.dirtySlideIds.some((id) => id !== view.confirmed?.frame.slideId)) notify(structure);
     if (rejected.size) paintLocal();
     if (changedState) notify(editState);
     if (ack.frame) install(ack.frame);
     drain();
+    for (const error of refusals) { try { onError?.(error); } catch {} }
   }
 
   function install(frame: PresentationCommandFrame): boolean {
@@ -559,6 +581,7 @@ export function createPeerlessViewStore(
     dispatch(intent) {
       if (disposed) return Promise.reject(new Error('Peerless view is disposed'));
       if (failure) return Promise.reject(failure);
+      if (view.inputFailure) view = { ...view, inputFailure: undefined };
       const wasKnown = known();
       const predecessor = sharedInput ? chainTailInput?.ticket?.seq ?? lastSentSeq : chainTail;
       const originalReference = 'at' in intent.payload ? intent.payload.at : undefined;
@@ -752,7 +775,7 @@ function chainedIntent(intent: PresentationCommandIntent, seq: number): Presenta
 
 function isTextMutation(intent: PresentationCommandIntent): boolean {
   return ['insertText', 'replaceText', 'deleteBackward', 'deleteForward', 'paragraphBreak', 'compositionCommit',
-    'formatText', 'setParagraphAlignment', 'undo', 'redo', 'moveShape', 'setShapeRect', 'insertTextBox', 'insertShape', 'insertPicture', 'applyEdits', 'registerFont'].includes(intent.kind);
+    'formatText', 'setParagraphAlignment', 'undo', 'redo', 'moveShape', 'setShapeRect', 'insertTextBox', 'insertShape', 'insertPicture', 'applyEdits', 'registerFont', 'applyRemoteUpdate'].includes(intent.kind);
 }
 
 function isLocalSelection(intent: PresentationCommandIntent): boolean {

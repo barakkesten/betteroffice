@@ -14,6 +14,7 @@ import { PeerlessSlideStrip } from './PeerlessSlideStrip';
 import { PeerlessPresence } from './PeerlessPresence';
 import { peerlessObjectCommand } from './peerlessObjectCommands';
 import { createPeerlessReplica } from './peerlessCollaboration';
+import { peerlessClipboard } from './peerlessClipboard';
 import { navigatePeerlessSlide } from './peerlessNavigation';
 import { peerlessHistoryKey } from './peerlessHistory';
 import { PeerlessCaret } from './PeerlessCaret';
@@ -78,7 +79,8 @@ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPrese
   return { previewFit, current };
 }
 
-function Overlays({ run, commands, preview }: { run: PeerlessPresentation; commands: PptxCommandStore; preview: PeerlessShapePreviewStore }) {
+function Overlays({ run, commands, preview, onError }: { run: PeerlessPresentation; commands: PptxCommandStore;
+  preview: PeerlessShapePreviewStore; onError?(error: Error): void }) {
   const snapshot = useSyncExternalStore(run.subscribeVisual, run.getVisualSnapshot, run.getVisualSnapshot);
   if (!snapshot?.view.confirmed) return null;
   const { view, fit } = snapshot;
@@ -96,6 +98,8 @@ function Overlays({ run, commands, preview }: { run: PeerlessPresentation; comma
     <PeerlessTextInput store={run.store} commands={commands} visual={run.visual} viewport={{ left: 0, top: 0, scale: fit.scale }}
       onShortcut={(shortcut) => {
         if (shortcut === 'save' || shortcut === 'undo' || shortcut === 'redo') void commands.execute(shortcut, null);
+        if (shortcut === 'copy' || shortcut === 'cut') void peerlessClipboard(run, shortcut === 'cut')
+          .catch((error: unknown) => onError?.(error instanceof Error ? error : new Error(String(error))));
       }} />
   </div>;
 }
@@ -220,7 +224,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
           left: insertion.preview.x * insertionScale, top: insertion.preview.y * insertionScale,
           width: insertion.preview.width * insertionScale, height: insertion.preview.height * insertionScale, border: '1px dashed #2563eb' }} />}
         {presentation && !failure && props.collaboration?.presence && <PeerlessPresence run={presentation} presence={props.collaboration.presence} />}
-        {presentation && <Overlays run={presentation} commands={commands} preview={shapes.preview} />}
+        {presentation && <Overlays run={presentation} commands={commands} preview={shapes.preview} onError={props.onError} />}
       </div>
     </div>
   </div></PptxCommandContext.Provider>;

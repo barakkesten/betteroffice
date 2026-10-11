@@ -190,6 +190,16 @@ function setup(text = 'abc', object = false) {
   return { client, store, paintFrame, paintEcho, restoreLine };
 }
 
+test('refused typing remains visible even without an error callback', async () => {
+  const { client, store } = setup();
+  const view = render(<PeerlessTextInput store={store} />);
+  await act(async () => {
+    beforeInput(textarea(view.container), 'insertText', 'NEXT');
+    client.ack(1, { outcomes: [{ seq: 1, status: 'refused', reason: 'stale-basis', committed: false }] });
+  });
+  expect(view.getByRole('alert').textContent).toContain('stale-basis');
+});
+
 function beforeInput(
   input: HTMLTextAreaElement,
   inputType: string,

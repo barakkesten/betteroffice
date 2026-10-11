@@ -223,10 +223,12 @@ export function PeerlessTextInput({ store, visual = store, viewport, onShortcut,
   }, [store, move]);
 
   const scale = viewport?.scale ?? 1;
-  return <textarea ref={inputRef} aria-label="Slide text" autoComplete="off" autoCorrect="off"
+  return <><textarea ref={inputRef} aria-label="Slide text" autoComplete="off" autoCorrect="off"
     autoCapitalize="off" spellCheck={false} tabIndex={0} readOnly={view.editState.readOnly}
     style={{ position: 'absolute', left: (viewport?.left ?? 0) + (view.caret?.x ?? 0) * scale,
       top: (viewport?.top ?? 0) + (view.caret?.y ?? 0) * scale, width: 1,
       height: Math.max(1, (view.caret?.height ?? 1) * scale), opacity: 0,
-      padding: 0, border: 0, resize: 'none', overflow: 'hidden', pointerEvents: 'none' }} />;
+      padding: 0, border: 0, resize: 'none', overflow: 'hidden', pointerEvents: 'none' }} />
+    {view.inputFailure && <div role="alert">{view.inputFailure.message}</div>}
+  </>;
 }

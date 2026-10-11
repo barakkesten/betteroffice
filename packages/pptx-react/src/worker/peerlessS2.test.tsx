@@ -1,3 +1,4 @@
+import './peerlessTestCapabilities';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { afterAll, afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';

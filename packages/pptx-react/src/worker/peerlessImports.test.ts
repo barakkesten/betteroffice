@@ -23,6 +23,38 @@ function modulePath(from: string, specifier: string): string {
   throw new Error(`Unresolved source: ${relative(root, from)} -> ${specifier}`);
 }
 
+test('default editor reaches the peerless surface only through a dynamic import', () => {
+  const seen = new Set<string>();
+  const deferred = new Set<string>();
+  const visit = (path: string): void => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    const walk = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) &&
+        !node.importClause?.isTypeOnly && node.moduleSpecifier.text.startsWith('.')) {
+        const bindings = node.importClause?.namedBindings;
+        if (!node.importClause?.name && bindings && ts.isNamedImports(bindings) &&
+          bindings.elements.every((entry) => entry.isTypeOnly)) return;
+        visit(modulePath(path, node.moduleSpecifier.text));
+      } else if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier &&
+        ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text.startsWith('.')) {
+        if (node.exportClause && ts.isNamedExports(node.exportClause) &&
+          node.exportClause.elements.every((entry) => entry.isTypeOnly)) return;
+        visit(modulePath(path, node.moduleSpecifier.text));
+      } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text.startsWith('.')) {
+        deferred.add(modulePath(path, node.arguments[0].text));
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(source(path));
+  };
+  visit(resolve(root, 'packages/pptx-react/src/index.ts'));
+  expect([...seen].map((path) => relative(root, path))).not.toContain('packages/pptx-react/src/worker/PeerlessPptxSurface.tsx');
+  expect([...seen].filter((path) => /\/worker\/(?:Peerless|peerless|createPeerless|usePeerless)/.test(path))).toEqual([]);
+  expect(deferred.has(resolve(root, 'packages/pptx-react/src/worker/PeerlessPptxSurface.tsx'))).toBe(true);
+});
+
 test('p2_peerless_import_graph_has_no_wasm_modules', () => {
   const exports = new Map<string, string>();
   for (const statement of source(barrel).statements) {
@@ -40,7 +72,11 @@ test('p2_peerless_import_graph_has_no_wasm_modules', () => {
     const name = relative(root, path).replace(/\\/g, '/');
     expect(name).not.toMatch(/packages\/pptx\/src\/(?:render\/image\.ts|wasm\/(?:loader|generated\/))/);
     const follow = (specifier: string, names?: readonly string[]) => {
-      if (specifier.startsWith('.')) visit(modulePath(path, specifier));
+      if (specifier.startsWith('.')) {
+        const target = modulePath(path, specifier);
+        if (name.startsWith('packages/pptx-react/')) expect(relative(root, target)).not.toMatch(/^packages\/(?!pptx-react\/)/);
+        visit(target);
+      }
       else if (specifier === '@betteroffice/pptx') {
         if (!names) throw new Error(`Expected named pptx import: ${name}`);
         for (const imported of names) {

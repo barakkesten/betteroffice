@@ -33,8 +33,8 @@ export interface PeerlessSession {
 export class PptxPeerlessUnsupportedError extends Error {
   readonly code = 'peerless-api-unavailable';
 
-  constructor(readonly operation: string) {
-    super(`${operation} is unavailable in the peer-less presentation editor`);
+  constructor(readonly operation: string, readonly alternative?: string) {
+    super(`${operation} is unavailable in the peer-less presentation editor${alternative ? `; use ${alternative} instead` : ''}`);
     this.name = 'PptxPeerlessUnsupportedError';
   }
 }

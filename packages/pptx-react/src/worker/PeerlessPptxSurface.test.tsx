@@ -1,3 +1,4 @@
+import './peerlessTestCapabilities';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
@@ -386,8 +387,9 @@ test('p2_peerless_mount_ready_after_first_authoritative_paint', async () => {
   expect(value.client.thumbnail).not.toHaveBeenCalled();
   await expect(api.saveAsync()).resolves.toEqual(new TextEncoder().encode('abc'));
   await expect(api.readContent()).resolves.toMatchObject({ ok: true });
-  expect('handle' in api).toBe(false);
-  expect('save' in api).toBe(false);
+  const legacy = api as unknown as { handle: unknown; save(): unknown };
+  expect(() => legacy.handle).toThrow(pptx.PptxPeerlessUnsupportedError);
+  expect(() => legacy.save()).toThrow(pptx.PptxPeerlessUnsupportedError);
   view.unmount();
   expect(value.owner.dispose).toHaveBeenCalledTimes(1);
 });
@@ -1721,7 +1723,10 @@ test('p5_refused_field_commit_allows_later_plain_composition', async () => {
     await act(async () => { await value.flush(); });
     expect(await value.savedParagraphs()).toEqual(['A12B', 'abc語']);
     expect(value.outcomes.get(value.sent[value.sent.length - 2].seq)).toMatchObject({ status: 'applied', committed: true });
-    expect(value.errors).not.toHaveBeenCalled();
+    expect(value.errors.mock.calls.map(([error]) => error)).toMatchObject([
+      { cause: { operation: 'compositionCommit', outcome: { reason: 'unsupported' } } },
+      { cause: { operation: 'compositionEnd', outcome: { reason: 'dependency-refused' } } },
+    ]);
   } finally { await value.dispose(); }
 });
 

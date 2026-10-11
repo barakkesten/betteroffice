@@ -42,6 +42,8 @@ import { ProposalsPanel } from './components/ProposalsPanel';
 import { ProposalCanvasOverlay, ProposalCanvasToolbar, ProposalNotesDiff, useProposalCanvas } from './components/ProposalCanvas';
 import {
   memo,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -141,12 +143,12 @@ import { createWorkerEditorApi, type PptxWorkerEditorApi } from './worker/create
 import type { EditablePresentation } from './worker/useEditableSessionPresentation';
 import { createWorkerInputCoordinator, type WorkerInputCoordinator } from './commands/workerInputCoordinator';
 import { currentContext, frameImages } from './viewer/sessionPaint';
-import { PeerlessPptxSurface } from './worker/PeerlessPptxSurface';
 import type { PptxAsyncEditorApi } from './worker/createPeerlessEditorApi';
 import { PptxAsyncEditorUnavailableError } from './worker/PptxAsyncEditorUnavailableError';
 
 const THUMBNAIL_SLICE_MS = 12;
 export const PEERLESS_FLAG = 'asyncApi' as const;
+const PeerlessPptxSurface = lazy(() => import('./worker/PeerlessPptxSurface').then((module) => ({ default: module.PeerlessPptxSurface })));
 
 export interface PptxTextSelection {
   shapeId: string;
@@ -528,14 +530,17 @@ export function PptxEditor({
 }
 
 function PptxAsyncEditorSession(props: PptxAsyncEditorProps) {
+  const { t } = useTranslation();
   const [workerAvailable] = useState(() => typeof Worker === 'function');
+  const [canvasAvailable] = useState(() => typeof OffscreenCanvas === 'function');
   const reason = (props as { experimentalWorkerOpen?: boolean }).experimentalWorkerOpen === false ? 'worker-open-disabled'
-    : !workerAvailable ? 'no-worker' : null;
+    : !workerAvailable ? 'no-worker' : !canvasAvailable ? 'no-offscreen-canvas' : null;
   const error = useMemo(() => {
     if (reason === 'worker-open-disabled') {
       return new PptxAsyncEditorUnavailableError('The async presentation editor requires experimentalWorkerOpen to be enabled');
     }
     if (reason === 'no-worker') return new PptxAsyncEditorUnavailableError('The async presentation editor requires Worker support');
+    if (reason === 'no-offscreen-canvas') return new PptxAsyncEditorUnavailableError('The async presentation editor requires OffscreenCanvas support');
     return null;
   }, [reason]);
   const onError = useRef(props.onError);
@@ -550,7 +555,8 @@ function PptxAsyncEditorSession(props: PptxAsyncEditorProps) {
     reported.current.add(reason);
     if (error) onError.current?.(error);
   }, [error, reason]);
-  return error ? <div className={props.className} role="alert">{error.message}</div> : <PeerlessPptxSurface {...props} />;
+  return error ? <div className={props.className} role="alert">{error.message}</div>
+    : <Suspense fallback={<div className={props.className} role="status">{t('worker.preparing')}</div>}><PeerlessPptxSurface {...props} /></Suspense>;
 }
 
 function PptxEditorSession(props: PptxWorkerEditorProps | PptxWorkerViewerProps | WorkerSessionProps | PptxEditorProps) {

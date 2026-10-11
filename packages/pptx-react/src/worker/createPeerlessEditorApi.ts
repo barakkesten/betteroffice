@@ -153,5 +153,8 @@ export function createPeerlessEditorApi(run: PeerlessPresentation, canvas: HTMLC
     version: api.version, readContent: api.readContent, validateEdits: api.validateEdits, applyEdits: api.applyEdits,
     registerFont: (face) => register(face, false), registerFallbackFont: (face) => register(face, true),
   });
-  return api;
+  return Object.defineProperties(api, {
+    handle: { get() { throw new PptxPeerlessUnsupportedError('handle', 'handleAsync()'); } },
+    save: { value() { throw new PptxPeerlessUnsupportedError('save', 'saveAsync()'); } },
+  });
 }

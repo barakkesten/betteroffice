@@ -1,3 +1,4 @@
+import './peerlessTestCapabilities';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { afterAll, afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test';
 import type { PeerlessSession, PresentationCommandClient } from '@betteroffice/pptx';
@@ -76,10 +77,10 @@ test('async opt-in preserves contextual editor API types', () => {
   void check;
 });
 
-test('async API flag mounts the peer-less surface', () => {
+test('async API flag mounts the peer-less surface', async () => {
   const { opener } = pendingSession();
   const view = render(<PptxEditor fonts={[]} file={file} {...{ [PEERLESS_FLAG]: true as const }} />);
-  expect(view.getByTestId('pptx-peerless-editor')).toBeTruthy();
+  await waitFor(() => expect(view.getByTestId('pptx-peerless-editor')).toBeTruthy());
   expect(opener).toHaveBeenCalledTimes(1);
 });
 
@@ -99,6 +100,28 @@ test('async API without Worker refuses once without becoming ready', async () =>
   expect(opener).not.toHaveBeenCalled();
   expect(view.container.querySelector('textarea')).toBeNull();
   expect(view.container.querySelector('[role="application"]')).toBeNull();
+});
+
+test('async API without OffscreenCanvas refuses once without opening a session', async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'OffscreenCanvas');
+  Object.defineProperty(globalThis, 'OffscreenCanvas', { configurable: true, value: undefined });
+  restorers.push(() => {
+    if (original) Object.defineProperty(globalThis, 'OffscreenCanvas', original);
+    else Reflect.deleteProperty(globalThis, 'OffscreenCanvas');
+  });
+  const { opener } = pendingSession();
+  const onError = mock((_error: Error) => {});
+  const onReady = mock(() => {});
+  const props = { fonts: [], file, [PEERLESS_FLAG]: true as const, onError, onReady };
+  const view = render(<StrictMode><PptxEditor {...props} /></StrictMode>);
+  await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+  expect(onError.mock.calls[0][0]).toBeInstanceOf(PptxAsyncEditorUnavailableError);
+  expect(view.getByRole('alert').textContent).toContain('OffscreenCanvas');
+  view.rerender(<StrictMode><PptxEditor {...props} /></StrictMode>);
+  expect(onError).toHaveBeenCalledTimes(1);
+  expect(onReady).not.toHaveBeenCalled();
+  expect(opener).not.toHaveBeenCalled();
+  expect(view.container.querySelector('textarea')).toBeNull();
 });
 
 test('async API with worker opening disabled refuses once without becoming ready', async () => {
