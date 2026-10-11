@@ -7,10 +7,11 @@ import {
   useSyncExternalStore,
 } from 'react';
 import type { RefObject } from 'react';
-import type { WorkbookHandle } from '@betteroffice/xlsx';
 import type { TFunction } from '@betteroffice/xlsx-i18n';
 import type { XlsxCommandController } from '../commands/createXlsxCommandStore';
 import type { XlsxPluginEditorAccess } from './createPluginClients';
+import type { XlsxPluginDocumentAccess } from './createPluginDocumentAccess';
+import { createPeerlessPluginGeometry } from './createPeerlessPluginDocument';
 import {
   createXlsxPluginHost,
   type XlsxPluginActivation,
@@ -23,11 +24,11 @@ const NO_ACTIVATIONS: readonly XlsxPluginActivation[] = Object.freeze([]);
 
 export interface UseXlsxPluginHostOptions extends XlsxEditorPluginProps {
   /** Stable; its members read the editor at call time. */
-  access: XlsxPluginEditorAccess;
+  access: XlsxPluginEditorAccess | XlsxPluginDocumentAccess;
   commands: XlsxCommandController;
   readOnly: boolean;
   /** The workbook once it is open, else null. Plugins open it while the editor still holds it. */
-  handle: WorkbookHandle | null;
+  handle: object | null;
   selection: XlsxPluginSelection;
   /** The canvas the grid paints into. */
   canvasRef: RefObject<HTMLCanvasElement | null>;
@@ -77,17 +78,24 @@ export function useXlsxPluginHost(options: UseXlsxPluginHostOptions): XlsxPlugin
       installed && host.generation() !== null ? pluginLayout(painted, host.version()) : null;
     geometryRef.current =
       layout && painted && canvas && layer
-        ? createPluginGeometry(
+        ? 'identity' in latest.current.access ? createPeerlessPluginGeometry(
             layout,
             painted,
             canvas,
             layer,
-            () =>
+            () => {
+              const access = latest.current.access;
+              const live = host.layoutId() === layout.id && canvas.isConnected && layer.isConnected;
+              if (!('identity' in access)) return { version: null, painted: null };
+              const identity = access.identity();
+              return { version: identity ? access.version(identity) : null,
+                painted: live ? paintedRef.current : null };
+            }
+          ) : createPluginGeometry(layout, painted, canvas, layer, () =>
               host.layoutId() === layout.id &&
               paintedRef.current === painted &&
               canvas.isConnected &&
-              layer.isConnected
-          )
+              layer.isConnected)
         : null;
     host.layoutChanged(layout);
     host.geometryChanged();
@@ -98,7 +106,7 @@ export function useXlsxPluginHost(options: UseXlsxPluginHostOptions): XlsxPlugin
   });
 
   useLayoutEffect(() => {
-    host.modeChanged(options.readOnly);
+    if (!('identity' in options.access)) host.modeChanged(options.readOnly);
   }, [host, options.readOnly]);
 
   useLayoutEffect(() => {
@@ -112,7 +120,10 @@ export function useXlsxPluginHost(options: UseXlsxPluginHostOptions): XlsxPlugin
   useEffect(() => () => host.close('unmounted'), [host]);
 
   useEffect(() => {
-    if (!options.handle || options.access.handle() !== options.handle) return;
+    if (!options.handle) return;
+    const access = options.access;
+    const identity = 'identity' in access ? access.identity() : access.handle();
+    if (identity !== options.handle) return;
     host.open(options.handle);
     publish();
     return () => host.close('document-replaced');
