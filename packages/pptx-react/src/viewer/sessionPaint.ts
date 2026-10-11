@@ -1,4 +1,4 @@
-import { decodePresentationImage } from '@betteroffice/pptx';
+import { decodePresentationImage } from '@betteroffice/pptx/editor';
 import type { CanvasImageResolver, PptxFontFace, PresentationFrame } from '@betteroffice/pptx';
 import { useRef } from 'react';
 import { isTiff } from '../../../../shared/media';

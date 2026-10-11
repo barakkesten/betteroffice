@@ -8,7 +8,7 @@ import {
   slideToPng,
   StaleProposalError,
   PptxPeerNotReadyError,
-} from '@betteroffice/pptx';
+} from '@betteroffice/pptx/editor';
 import type {
   CanvasImageResolver,
   CollaborationReplica,

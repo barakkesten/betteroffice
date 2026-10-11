@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import JSZip from 'jszip';
 import { StrictMode } from 'react';
 import * as pptx from '@betteroffice/pptx';
+import * as editor from '@betteroffice/pptx/editor';
 import * as browserImage from '../../../pptx/src/render/browserImage';
 import { createSessionHost } from '../../../../shared/office-session/host';
 import { isClientMessage, isHostMessage } from '../../../../shared/office-session/protocol';
@@ -416,8 +417,8 @@ describe('peerless editor chunk failures', () => {
 
   test('retries a transient import failure on a later mount without opening a main-thread peer', async () => {
     const value = session();
-    const main = spyOn(pptx, 'initWasm').mockImplementation(() => { throw new Error('Main wasm initialized'); });
-    const model = spyOn(pptx, 'openPresentation').mockImplementation(() => { throw new Error('Main peer opened'); });
+    const main = spyOn(editor, 'initWasm').mockImplementation(() => { throw new Error('Main wasm initialized'); });
+    const model = spyOn(editor, 'openPresentation').mockImplementation(() => { throw new Error('Main peer opened'); });
     const chunk = deferred<Awaited<ReturnType<typeof pptxPeerlessEditorLoader.load>>>();
     const originalLoad = pptxPeerlessEditorLoader.load;
     const load = spyOn(pptxPeerlessEditorLoader, 'load').mockImplementation(originalLoad).mockReturnValueOnce(chunk.promise);
@@ -466,8 +467,8 @@ test('p2_peerless_mount_ready_after_first_authoritative_paint', async () => {
 test('p2_peerless_mount_never_initializes_main_wasm', async () => {
   const value = session();
   const forbidden = () => { throw new Error('main wasm initialized'); };
-  const main = spyOn(pptx, 'initWasm').mockImplementation(forbidden);
-  const model = spyOn(pptx, 'openPresentation').mockImplementation(forbidden);
+  const main = spyOn(editor, 'initWasm').mockImplementation(forbidden);
+  const model = spyOn(editor, 'openPresentation').mockImplementation(forbidden);
   const instantiate = spyOn(WebAssembly, 'instantiate').mockImplementation(forbidden);
   const instantiateStreaming = spyOn(WebAssembly, 'instantiateStreaming').mockImplementation(forbidden);
   const compile = spyOn(WebAssembly, 'compile').mockImplementation(forbidden);
@@ -567,7 +568,7 @@ function pictureFrame(frame: PresentationCommandFrame, assetId: string): Present
 function heldImage() {
   const image = deferred<CanvasImageSource | null>();
   const resolve = Object.assign((_assetId: string) => image.promise, { release: mock(() => {}) });
-  const cache = spyOn(pptx, 'browserFrameImages').mockReturnValue({ resolve: () => resolve, dispose: mock(() => {}) });
+  const cache = spyOn(editor, 'browserFrameImages').mockReturnValue({ resolve: () => resolve, dispose: mock(() => {}) });
   restorers.push(() => cache.mockRestore());
   return { image, release() {
     const source = new Image();
@@ -631,7 +632,7 @@ test.each(['painted', 'disposed', 'failed', 'stale', 'failed-layer'] as const)('
     }
     if (outcome === 'failed-layer') {
       const paint = pptx.paintSlide;
-      const layer = spyOn(pptx, 'paintSlide').mockImplementation(async (...args) => {
+      const layer = spyOn(editor, 'paintSlide').mockImplementation(async (...args) => {
         await paint(...args);
         if (args[1].primitives.some((primitive) => primitive.kind === 'image' && primitive.assetId === 'image:0')) {
           throw new Error('Paint failed');

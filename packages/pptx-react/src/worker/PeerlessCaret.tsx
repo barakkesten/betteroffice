@@ -1,4 +1,5 @@
-import { findLine, indexGeometry, transformedRect, type CommandRect, type SlidePrimitive } from '@betteroffice/pptx';
+import { findLine, indexGeometry, transformedRect } from '@betteroffice/pptx/peerless';
+import type { CommandRect, SlidePrimitive } from '@betteroffice/pptx';
 import { useMemo, useSyncExternalStore } from 'react';
 import { useCaretBlink } from '../useCaretBlink';
 import { echoLineClip, measureEchoPosition } from './localEchoPainter';

@@ -1,4 +1,4 @@
-import { PRESENTATION_COMMAND_MUTATIONS, hitGeometry, indexGeometry, PptxPeerlessUnsupportedError } from '@betteroffice/pptx';
+import { PRESENTATION_COMMAND_MUTATIONS, hitGeometry, indexGeometry, PptxPeerlessUnsupportedError } from '@betteroffice/pptx/peerless';
 import type { PresentationCommandAccessMethods, PresentationCommandMutationMethods, PresentationCommandMutation, PresentationCommandAccessMethod, PptxEditRefusal, PptxFontFace } from '@betteroffice/pptx';
 import { invokePeerless } from './peerlessObjectCommands';
 import { peerlessGestureActive } from './peerlessViewStore';

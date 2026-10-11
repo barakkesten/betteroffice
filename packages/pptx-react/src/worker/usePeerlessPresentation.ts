@@ -1,5 +1,5 @@
-import { createPeerlessSession, presentationSharedInputs, sizeCanvasForSlide,
-  PptxWorkerEditorDisposedError, PptxWorkerEditorFailedError, PRESENTATION_COMMAND_ADMISSION } from '@betteroffice/pptx';
+import { createPeerlessSession, presentationSharedInputs, PRESENTATION_COMMAND_ADMISSION } from '@betteroffice/pptx/peerless';
+import { sizeCanvasForSlide, PptxWorkerEditorDisposedError, PptxWorkerEditorFailedError } from '@betteroffice/pptx/editor';
 import type {
   DeckSnapshot, PptxFontFace, PeerlessSession, PresentationCommandClient, PresentationCommandFrame,
 } from '@betteroffice/pptx';

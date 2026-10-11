@@ -1,4 +1,4 @@
-import { createPptxWorkerEditorSession, PptxWorkerEditorDisposedError } from '@betteroffice/pptx';
+import { createPptxWorkerEditorSession, PptxWorkerEditorDisposedError } from '@betteroffice/pptx/editor';
 import type {
   DeckSnapshot, PptxWorkerEditorAccess, PptxWorkerEditorFrame, PptxWorkerEditorSession,
   SlideDisplayList,

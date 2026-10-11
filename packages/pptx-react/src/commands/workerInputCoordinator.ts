@@ -1,4 +1,4 @@
-import { PptxPeerNotReadyError, PptxWorkerEditorDisposedError } from '@betteroffice/pptx';
+import { PptxPeerNotReadyError, PptxWorkerEditorDisposedError } from '@betteroffice/pptx/editor';
 import type { PptxWorkerEditorAccess, PptxWorkerEditorOperation, PptxWorkerEditorSession } from '@betteroffice/pptx';
 import type { PptxInputCoordinator } from './inputCoordinator';
 import { PptxCommandAdmissionError } from './createPptxCommandStore';

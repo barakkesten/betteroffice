@@ -1,10 +1,14 @@
 import { copyFile, mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'tsup';
+import { packageBoundary } from '../../scripts/package-boundary';
 
 export default defineConfig((options) => ({
   entry: {
     index: 'src/index.ts',
+    editor: 'src/editor.ts',
+    peerless: 'src/peerless.ts',
     pptxSessionWorker: 'src/session/worker.ts',
   },
   format: ['esm'],
@@ -14,6 +18,7 @@ export default defineConfig((options) => ({
   clean: true,
   treeshake: true,
   minify: true,
+  esbuildPlugins: [packageBoundary(fileURLToPath(new URL('.', import.meta.url)))],
   esbuildOptions(options) {
     options.chunkNames = 'chunk-[hash]';
   },

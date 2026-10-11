@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent, type RefObject } from 'react';
 import type { PresentationCommandAck, ShapeRect } from '@betteroffice/pptx';
-import { DEFAULT_EDITOR_TEXT_STYLE } from '@betteroffice/pptx';
+import { DEFAULT_EDITOR_TEXT_STYLE } from '@betteroffice/pptx/editor';
 import { shapePresetFromTool, type PptxEditorTool } from '../components/toolbarTypes';
 import { useTranslation } from '../i18n';
 import { slidePoint, type SlidePoint } from '../interactions';

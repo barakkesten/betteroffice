@@ -1,4 +1,4 @@
-import { openPresentationSession } from '@betteroffice/pptx';
+import { openPresentationSession } from '@betteroffice/pptx/editor';
 import type { PresentationFrame, PresentationSession } from '@betteroffice/pptx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PptxWorkerViewerApi, PptxWorkerViewerProps } from '../PptxEditor';

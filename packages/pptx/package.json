@@ -36,6 +36,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./peerless": {
+      "types": "./dist/peerless.d.ts",
+      "import": "./dist/peerless.js"
+    },
+    "./editor": {
+      "types": "./dist/editor.d.ts",
+      "import": "./dist/editor.js"
     }
   },
   "files": [

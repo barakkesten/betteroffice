@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { afterAll, afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test';
 import { StrictMode } from 'react';
-import * as pptx from '@betteroffice/pptx';
+import * as pptx from '@betteroffice/pptx/editor';
 import type {
   DeckSnapshot, PptxWorkerEditorAccess, PptxWorkerEditorFrame, PptxWorkerEditorOperation,
   PptxWorkerEditorSession, PptxWorkerEditorState, SlideDisplayList, StorySnapshot,

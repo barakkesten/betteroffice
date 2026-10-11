@@ -1,7 +1,7 @@
 import {
   decodeCommandDisplayList, findLine, frameAssetIds, hitGeometry, indexGeometry, navigateGeometry,
   presentationSharedInputs, selectionGeometry, transformedRect,
-} from '@betteroffice/pptx';
+} from '@betteroffice/pptx/peerless';
 import type {
   PresentationCommandAck, PresentationCommandBasis, PresentationCommandClient, PresentationCommandEditState,
   PresentationCommandFrame, PresentationCommandFailure, PresentationCommandIntent,
