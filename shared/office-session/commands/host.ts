@@ -1,0 +1,390 @@
+import { hasOwn, isTransferResult, transferable, type TransferResult } from '../protocol';
+import { SessionFailure, type MethodPolicy } from '../types';
+import { cloneData } from './clone';
+import {
+  COMMAND_OUTCOME_UNKNOWN, isCommandAck, isCommandEnvelope,
+  type ApplyResult, type CommandAck, type CommandEnvelope, type CommandHost,
+  type CommandHostOptions, type CommandOutcome, type CommandOutcomeUnknownError, type FrameEnvelope,
+} from './types';
+
+const MAX_LEDGER_RANGES = 4096;
+const MAX_PENDING_HANDLERS = 4096;
+
+function sameState(left: unknown, right: unknown): boolean {
+  const seen = new WeakMap<object, object>();
+  let remaining = 4096;
+
+  function equal(a: unknown, b: unknown, depth: number): boolean {
+    if (--remaining < 0 || depth > 32) return false;
+    if (Object.is(a, b)) return true;
+    if (a === null || b === null ||
+      typeof a !== 'object' || typeof b !== 'object') return false;
+    if (seen.has(a)) return seen.get(a) === b;
+    seen.set(a, b);
+    if (a instanceof Date || b instanceof Date) {
+      return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
+    }
+    if (a instanceof RegExp || b instanceof RegExp) {
+      return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+    }
+    if (a instanceof Number || b instanceof Number || a instanceof Boolean || b instanceof Boolean ||
+      a instanceof String || b instanceof String) {
+      return a.constructor === b.constructor && Object.is(a.valueOf(), b.valueOf());
+    }
+    if (a instanceof ArrayBuffer || b instanceof ArrayBuffer || ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
+      const bytes = (value: object): Uint8Array | undefined => value instanceof ArrayBuffer
+        ? new Uint8Array(value)
+        : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : undefined;
+      const x = bytes(a);
+      const y = bytes(b);
+      if (!x || !y || a.constructor !== b.constructor || x.byteLength !== y.byteLength) return false;
+      if (x.byteLength > remaining) return false;
+      remaining -= x.byteLength;
+      for (let index = 0; index < x.length; index += 1) if (x[index] !== y[index]) return false;
+      return true;
+    }
+    if (a instanceof Map || b instanceof Map || a instanceof Set || b instanceof Set) {
+      if (a.constructor !== b.constructor || !(a instanceof Map || a instanceof Set) ||
+        !(b instanceof Map || b instanceof Set) || a.size !== b.size || a.size > remaining) return false;
+      const x = a.entries();
+      const y = b.entries();
+      for (let index = 0; index < a.size; index += 1) {
+        if (!equal(x.next().value, y.next().value, depth + 1)) return false;
+      }
+      return true;
+    }
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    if (Array.isArray(a) && Array.isArray(b) && a.length !== b.length) return false;
+    if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    if (!Array.isArray(a) && Object.getPrototypeOf(a) !== Object.prototype && Object.getPrototypeOf(a) !== null) return false;
+    const keys = Object.keys(a);
+    if (keys.length > remaining || keys.length !== Object.keys(b).length) return false;
+    const x = a as Record<string, unknown>;
+    const y = b as Record<string, unknown>;
+    return keys.every((key) => hasOwn(b, key) && equal(x[key], y[key], depth + 1));
+  }
+
+  return equal(left, right, 0);
+}
+
+function sequenceSet(initial: readonly number[] = []) {
+  const ranges: [number, number][] = [];
+
+  function contains(seq: number): boolean {
+    let low = 0;
+    let high = ranges.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      const range = ranges[middle]!;
+      if (seq < range[0]) high = middle;
+      else if (seq > range[1]) low = middle + 1;
+      else return true;
+    }
+    return false;
+  }
+
+  function add(seq: number): void {
+    if (!Number.isSafeInteger(seq) || seq <= 0) throw new TypeError('Invalid replay sequence');
+    let index = 0;
+    while (index < ranges.length && ranges[index]![1] < seq - 1) index += 1;
+    const next = ranges[index];
+    if (next && next[0] <= seq + 1) {
+      next[0] = Math.min(next[0], seq);
+      next[1] = Math.max(next[1], seq);
+      const following = ranges[index + 1];
+      if (following && following[0] <= next[1] + 1) {
+        next[1] = Math.max(next[1], following[1]);
+        ranges.splice(index + 1, 1);
+      }
+      return;
+    }
+    if (ranges.length === MAX_LEDGER_RANGES) {
+      throw new SessionFailure('out-of-memory', 'Command replay ledger exhausted: 4096 disjoint ranges per epoch');
+    }
+    ranges.splice(index, 0, [seq, seq]);
+  }
+
+  for (const seq of initial) add(seq);
+  return { contains, add };
+}
+
+function copyOutcome(outcome: CommandOutcome): CommandOutcome {
+  return {
+    ...outcome,
+    ...(outcome.affectedSeqs === undefined ? {} : { affectedSeqs: [...outcome.affectedSeqs] }),
+  };
+}
+
+function unknownOutcome(seq: number, cause: unknown): CommandOutcomeUnknownError {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const data: Pick<CommandOutcomeUnknownError, 'name' | 'refusal'> = {
+    name: COMMAND_OUTCOME_UNKNOWN, refusal: { seq },
+  };
+  return Object.assign(new Error(`Command ${seq} has an unknown outcome: ${message}`), data);
+}
+
+function terminalFailure(cause: unknown): SessionFailure {
+  if (cause instanceof SessionFailure) return cause;
+  const trap = typeof WebAssembly !== 'undefined' && cause instanceof WebAssembly.RuntimeError;
+  return new SessionFailure(trap ? 'trap' : 'crash', cause instanceof Error ? cause.message : String(cause));
+}
+
+/** @internal Serial worker command handlers with replay dedupe and covering frame replies. */
+export function createCommandHost<P, S, E, F>(
+  options: CommandHostOptions<P, S, E, F>
+): CommandHost<P, S, E, F> {
+  const retainedLimit = options.retainedOutcomes ?? 256;
+  const { session, incarnation, epoch, getVersion, apply, frame, snapshot } = options;
+  let throughSeq = options.throughSeq ?? 0;
+  let version = getVersion();
+  if (!Number.isSafeInteger(retainedLimit) || retainedLimit < 0 ||
+    !Number.isSafeInteger(throughSeq) || throughSeq < 0 || !Number.isFinite(version)) {
+    throw new TypeError('Invalid command host ledger');
+  }
+  const outcomes = new Map<number, CommandOutcome>();
+  const refused = sequenceSet(options.refusedSeqs);
+  const replayApplied = new Set(options.replayAppliedSeqs);
+  for (const seq of replayApplied) {
+    if (!Number.isSafeInteger(seq) || seq <= 0) throw new TypeError('Invalid replay sequence');
+  }
+  let poison: Error | undefined;
+  let tail: Promise<void> = Promise.resolve();
+  let admitted = 0;
+  let queuedEdits = 0;
+  let pendingHandlers = 0;
+  let enteredAdmissions = 0;
+  let pendingFrames = 0;
+  const frameBarriers = new Map<number, Array<() => void>>();
+  let selection: S | undefined;
+  let editState: E | undefined;
+  let hasSelection = false;
+  let hasEditState = false;
+
+  function serialize<T>(run: () => Promise<T>): Promise<T> {
+    if (pendingHandlers === MAX_PENDING_HANDLERS) {
+      poison = new SessionFailure('out-of-memory', 'Command handler capacity exceeded');
+    }
+    if (poison) return Promise.reject(poison);
+    pendingHandlers += 1;
+    const result = tail.then(() => {
+      if (poison) throw poison;
+      return run();
+    });
+    const settled = result.finally(() => {
+      pendingHandlers -= 1;
+      releasePoisonedFrames();
+    });
+    tail = settled.then(() => {}, () => {});
+    return settled;
+  }
+
+  function releaseFrames(boundary: number): void {
+    const waiting = frameBarriers.get(boundary);
+    if (!waiting) return;
+    frameBarriers.delete(boundary);
+    for (const start of waiting) start();
+  }
+
+  function releasePoisonedFrames(): void {
+    if (!poison) return;
+    for (const boundary of frameBarriers.keys()) releaseFrames(boundary);
+  }
+
+  async function buildFrame(): Promise<FrameEnvelope<F> | TransferResult<FrameEnvelope<F>>> {
+    try {
+      const rendered = await frame({ coversThroughSeq: throughSeq, version });
+      const candidate = isTransferResult(rendered) ? (rendered as TransferResult<FrameEnvelope<F>>).value : rendered;
+      if (!isCommandAck({ session, incarnation, epoch, throughSeq, version, outcomes: [], frame: candidate }) ||
+        candidate.coversThroughSeq !== throughSeq) {
+        throw new Error('Frame does not cover the settled command boundary');
+      }
+      return rendered;
+    } catch (error) {
+      poison = terminalFailure(error);
+      throw poison;
+    }
+  }
+
+  function settle(outcome: CommandOutcome): CommandOutcome {
+    if (outcome.status === 'refused' || outcome.status === 'cancelled') {
+      try { refused.add(outcome.seq); }
+      catch (error) { poison = terminalFailure(error); throw poison; }
+    }
+    throughSeq = outcome.seq;
+    if (retainedLimit > 0) {
+      outcomes.set(outcome.seq, copyOutcome(outcome));
+      if (outcomes.size > retainedLimit) outcomes.delete(outcomes.keys().next().value!);
+    }
+    return outcome;
+  }
+
+  function refusal(seq: number, reason: string, cancelled = false): CommandOutcome {
+    return { seq, status: cancelled ? 'cancelled' : 'refused', reason, committed: false };
+  }
+
+  function ack(outcome: CommandOutcome, result?: ApplyResult<S, E>): CommandAck<S, E, F> {
+    const reply: CommandAck<S, E, F> = {
+      session, incarnation, epoch,
+      throughSeq, version, outcomes: [copyOutcome(outcome)],
+    };
+    try {
+      if (result && hasOwn(result, 'selection') &&
+        (!hasSelection || !(options.selectionEquals ?? sameState)(selection, result.selection))) {
+        selection = cloneData(result.selection);
+        hasSelection = true;
+        reply.selection = cloneData(selection);
+      }
+      if (result && hasOwn(result, 'editState') &&
+        (!hasEditState || !(options.editStateEquals ?? sameState)(editState, result.editState))) {
+        editState = cloneData(result.editState);
+        hasEditState = true;
+        reply.editState = cloneData(editState);
+      }
+    } catch (error) {
+      poison = terminalFailure(error);
+      throw poison;
+    }
+    return reply;
+  }
+
+  async function withFrame(reply: CommandAck<S, E, F>): Promise<CommandAck<S, E, F> | TransferResult<CommandAck<S, E, F>>> {
+    if (admitted > 0 || queuedEdits > 1) return reply;
+    try {
+      const rendered = await buildFrame();
+      if (isTransferResult(rendered)) {
+        reply.frame = rendered.value;
+        if (!isCommandAck(reply) || reply.frame.coversThroughSeq !== throughSeq) {
+          throw new Error('Frame does not cover the settled command boundary');
+        }
+        return transferable(reply, rendered.transfer);
+      }
+      reply.frame = rendered;
+      if (!isCommandAck(reply) || rendered.coversThroughSeq !== throughSeq) {
+        throw new Error('Frame does not cover the settled command boundary');
+      }
+      return reply;
+    } catch (error) {
+      poison = terminalFailure(error);
+      throw poison;
+    }
+  }
+
+  function checkedVersion(seq: number): number {
+    try {
+      const current = getVersion();
+      if (!Number.isFinite(current) || current !== version) throw new Error('Version changed outside a command');
+      return current;
+    } catch (error) {
+      poison = unknownOutcome(seq, error);
+      throw poison;
+    }
+  }
+
+  function liveCommand(command: CommandEnvelope<P>): boolean {
+    return isCommandEnvelope(command) && command.session === session &&
+      command.incarnation === incarnation && command.basis.epoch === epoch;
+  }
+
+  async function run(command: CommandEnvelope<P>): Promise<CommandAck<S, E, F> | TransferResult<CommandAck<S, E, F>>> {
+    if (!isCommandEnvelope(command)) throw new TypeError('Invalid command envelope');
+    if (command.session !== session) return ack(refusal(command.seq, 'wrong-session'));
+    if (command.incarnation !== incarnation) return ack(refusal(command.seq, 'stale-incarnation'));
+    if (command.basis.epoch !== epoch) {
+      const outcome = refusal(command.seq, 'stale-epoch');
+      return ack(command.seq > throughSeq ? settle(outcome) : outcome);
+    }
+    if (command.seq <= throughSeq) {
+      return withFrame(ack(outcomes.get(command.seq) ?? { seq: command.seq, status: 'duplicate' }));
+    }
+    if (refused.contains(command.seq)) return withFrame(ack(settle(refusal(command.seq, 'unknown-outcome'))));
+    if (command.afterSeq !== undefined && refused.contains(command.afterSeq)) {
+      return withFrame(ack(settle(refusal(command.seq, 'dependency-refused', true))));
+    }
+    const replayPreviouslyApplied = command.replay === true && replayApplied.has(command.seq);
+    const before = checkedVersion(command.seq);
+    if (command.expectVersion && !replayPreviouslyApplied && command.basis.version !== before) {
+      return withFrame(ack(settle(refusal(command.seq, 'stale-version'))));
+    }
+    let result: ApplyResult<S, E>;
+    try {
+      result = await apply(command, {
+        basis: command.basis, currentVersion: before, replayPreviouslyApplied,
+      });
+      const after = getVersion();
+      if (!Number.isFinite(after) || (result.status === 'applied' ? after <= before : after !== before)) {
+        throw new Error(`${result.status} violated the command version contract`);
+      }
+      if (result.status !== 'applied' && result.status !== 'noop' && result.status !== 'refused') {
+        throw new Error('Invalid format apply result');
+      }
+      version = after;
+    } catch (error) {
+      poison = unknownOutcome(command.seq, error);
+      throw poison;
+    }
+    const outcome: CommandOutcome = result.status === 'refused'
+      ? { ...refusal(command.seq, result.reason), ...(result.affectedSeqs === undefined ? {} : { affectedSeqs: result.affectedSeqs }) }
+      : { seq: command.seq, status: result.status };
+    return withFrame(ack(settle(outcome), result));
+  }
+
+  const editPolicy: MethodPolicy = { lane: 'input', mutates: true, reframes: true, reorderable: false };
+  return {
+    handler(_context, command) {
+      const live = liveCommand(command);
+      const admission = live && admitted > 0;
+      if (live) {
+        admitted = Math.max(0, admitted - 1);
+        queuedEdits += 1;
+      }
+      const result = serialize(() => run(command));
+      if (admission) releaseFrames(++enteredAdmissions);
+      releasePoisonedFrames();
+      return result.finally(() => {
+        if (live) queuedEdits -= 1;
+        releasePoisonedFrames();
+      });
+    },
+    policy(command) {
+      if (liveCommand(command)) admitted += 1;
+      return { ...editPolicy };
+    },
+    checkpoint(_context) {
+      return serialize(async () => {
+        try {
+          const before = getVersion();
+          if (before !== version) throw new Error('Version changed before checkpoint');
+          const state = (await snapshot()).slice();
+          if (getVersion() !== before) throw new Error('Snapshot changed the command version');
+          return transferable({ state, epoch, version, throughSeq }, [state.buffer]);
+        } catch (error) {
+          poison = terminalFailure(error);
+          throw poison;
+        }
+      });
+    },
+    checkpointPolicy() {
+      return { lane: 'input', reorderable: false };
+    },
+    frame() {
+      if (pendingFrames === MAX_PENDING_HANDLERS) {
+        poison = new SessionFailure('out-of-memory', 'Command frame capacity exceeded');
+      }
+      if (poison) {
+        releasePoisonedFrames();
+        return Promise.reject(poison);
+      }
+      if (admitted === 0) return serialize(buildFrame);
+      pendingFrames += 1;
+      return new Promise<FrameEnvelope<F> | TransferResult<FrameEnvelope<F>>>((resolve, reject) => {
+        const boundary = enteredAdmissions + admitted;
+        let waiting = frameBarriers.get(boundary);
+        if (!waiting) frameBarriers.set(boundary, waiting = []);
+        waiting.push(() => {
+          pendingFrames -= 1;
+          void serialize(buildFrame).then(resolve, reject);
+        });
+      });
+    },
+  };
+}
