@@ -16,6 +16,11 @@ export default defineConfig({
       enforce: 'pre',
       transform(source, id) {
         const file = id.split('?')[0];
+        if (file.endsWith('/pptx/src/wasm/loader.ts')) {
+          const construction = 'renderer = construct(() => new PptxRenderer());';
+          if (!source.includes(construction)) this.error('Update the main-thread presentation engine capture');
+          return source.replace(construction, `${construction} globalThis.__pptxMainEngineProbe?.capture();`);
+        }
         if (file.endsWith('/DocxEditor/hooks/useYrsCoreSession.ts')) {
           const creation = /const (\w+) = await yrs\.createYrsSession\([^;]+\);/g;
           if (!creation.test(source)) {
