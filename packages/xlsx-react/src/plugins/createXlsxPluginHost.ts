@@ -128,7 +128,9 @@ function readVersion(handle: WorkbookHandle): string | null {
   }
 }
 
-export function createXlsxPluginHost(access: XlsxPluginHostAccess): XlsxPluginHost {
+export function createXlsxPluginHost(
+  access: XlsxPluginHostAccess, clientFactory: typeof createPluginClients = createPluginClients
+): XlsxPluginHost {
   let reporter: ((error: XlsxPluginError) => void) | undefined;
   let handle: object | null = null;
   let detachUpdates: (() => void) | null = null;
@@ -185,7 +187,7 @@ export function createXlsxPluginHost(access: XlsxPluginHostAccess): XlsxPluginHo
 
   const createContext = (invocation: PluginInvocation<XlsxPluginSnapshot>): Context => {
     const pluginId = invocation.pluginId;
-    const clients = createPluginClients(
+    const clients = clientFactory(
       invocation,
       access,
       () => runtime.grant(pluginId) as XlsxPluginGrant,

@@ -34,12 +34,12 @@ import {
 import { isMacPlatform } from '../../commands/descriptors';
 import { PLAIN_FORMATTING, testBinding, testEnvironment, testSessionCommands } from '../../commands/testing';
 import { useCommandShortcuts } from '../../commands/useCommandShortcuts';
-import { createPeerlessWorkerXlsxCommandBinding, type PeerlessWorkerXlsxEditorBridge } from '../../commands/useWorkerXlsxCommands';
-import { createPeerlessWorkerInputCoordinator, type PeerlessWorkerCommand } from '../../commands/workerInputCoordinator';
+import { createPeerlessWorkerXlsxCommandBinding, type PeerlessWorkerXlsxEditorBridge } from '../../commands/usePeerlessWorkerXlsxCommands';
+import { createPeerlessWorkerInputCoordinator, type PeerlessWorkerCommand } from '../../commands/peerlessWorkerInputCoordinator';
 import type { XlsxCommandResult, XlsxCommandStore } from '../../commands/types';
 import { createAsyncEditorApi } from '../../worker/createAsyncEditorApi';
 import type { WorkerEditorApiBridge } from '../../worker/createWorkerEditorApi';
-import { PeerlessWorkbookSession } from '../../worker/useEditableSessionWorkbook';
+import { PeerlessWorkbookSession } from '../../worker/usePeerlessSessionWorkbook';
 
 const { act, cleanup, fireEvent, render, within } = await import('@testing-library/react');
 

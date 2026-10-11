@@ -1,5 +1,5 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-import { afterAll, afterEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { selectionAt, StaleProposalError } from '@betteroffice/xlsx';
 import type { CommandStatus, EditResult, WorkbookAck, WorkbookCommandSelection, WorkbookEditState, WorkbookHandle } from '@betteroffice/xlsx';
 import { WorkbookEditPeerFailedError, type WorkbookEditPeer } from '@betteroffice/xlsx';
@@ -9,11 +9,10 @@ import type { WorkbookFormatTokenResult } from '../../../xlsx/src/session/comman
 import type { InputDraft } from './inputCoordinator';
 import { PLAIN_FORMATTING } from './testing';
 import type { XlsxEditorView } from './useXlsxCommands';
-import {
-  createWorkerXlsxCommandBinding, useWorkerXlsxCommands, type WorkerXlsxEditorBridge,
-  createPeerlessWorkerXlsxCommandBinding, usePeerlessWorkerXlsxCommands, type PeerlessWorkerXlsxEditorBridge,
-} from './useWorkerXlsxCommands';
-import { createPeerlessWorkerInputCoordinator, createWorkerInputCoordinator, type PeerlessWorkerCommand } from './workerInputCoordinator';
+import { createWorkerXlsxCommandBinding, useWorkerXlsxCommands, type WorkerXlsxEditorBridge } from './useWorkerXlsxCommands';
+import { createPeerlessWorkerXlsxCommandBinding, usePeerlessWorkerXlsxCommands, type PeerlessWorkerXlsxEditorBridge } from './usePeerlessWorkerXlsxCommands';
+import { createWorkerInputCoordinator } from './workerInputCoordinator';
+import { createPeerlessWorkerInputCoordinator, type PeerlessWorkerCommand } from './peerlessWorkerInputCoordinator';
 
 const ownsDom = !GlobalRegistrator.isRegistered;
 if (ownsDom) GlobalRegistrator.register();
@@ -191,6 +190,17 @@ afterEach(() => {
 afterAll(async () => { if (ownsDom) await GlobalRegistrator.unregister(); });
 
 describe('peerless worker XLSX commands', () => {
+  test('save consults the host request and honors its veto', async () => {
+    const { store, bridge, session } = peerlessCommands();
+    const save = spyOn(session, 'save');
+    restorers.push(() => save.mockRestore());
+    bridge.requestSave = mock(async () => ({ ok: true as const, status: 'noop' as const }));
+    expect(await store.execute('save', null)).toEqual({ ok: true, status: 'noop' });
+    expect(bridge.requestSave).toHaveBeenCalledTimes(1);
+    expect(save).not.toHaveBeenCalled();
+    expect(bridge.deliver).not.toHaveBeenCalled();
+  });
+
   for (const readOnly of [false, true]) {
     test(`queued peerless formatting keeps submission-time permissions (${readOnly ? 'read-only' : 'editable'})`, async () => {
       const { store, state, coordinator, sent, ack } = peerlessCommands();
@@ -297,7 +307,7 @@ describe('peerless worker XLSX commands', () => {
     let revision = 3;
     host.bridge.frame = () => frame;
     host.bridge.selectionRevision = () => revision;
-    const events: import('./workerInputCoordinator').PeerlessWorkerInputEvent[] = [];
+    const events: import('./peerlessWorkerInputCoordinator').PeerlessWorkerInputEvent[] = [];
     host.coordinator.subscribe((event) => events.push(event));
     const formatting = host.store.execute('bold', null);
     revision = 4;

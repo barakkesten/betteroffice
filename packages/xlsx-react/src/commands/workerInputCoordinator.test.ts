@@ -9,16 +9,11 @@ import { createTestWorkbookSession, loadWorkbookSessionFixtures } from '../../..
 import { openWorkbook, type WorkbookHandle } from '../../../xlsx/src/wasm/loader';
 import { XlsxCommandAdmissionError } from './createXlsxCommandStore';
 import type { InputDraft, InputSeal } from './inputCoordinator';
+import { createWorkerInputCoordinator, WorkerInputNotReadyError, WorkerInputRefusal, type WorkerInputCoordinator } from './workerInputCoordinator';
 import {
-  createWorkerInputCoordinator,
-  createPeerlessWorkerInputCoordinator,
-  type PeerlessWorkerCommand,
-  type PeerlessWorkerCommandInput,
+  createPeerlessWorkerInputCoordinator, type PeerlessWorkerCommand, type PeerlessWorkerCommandInput,
   type PeerlessWorkerInputEvent,
-  WorkerInputNotReadyError,
-  WorkerInputRefusal,
-  type WorkerInputCoordinator,
-} from './workerInputCoordinator';
+} from './peerlessWorkerInputCoordinator';
 
 function peerlessHarness(maxOutstanding = 8, maxQueued = 8) {
   const sent: PeerlessWorkerCommand[] = [];
@@ -72,6 +67,17 @@ function peerlessHarness(maxOutstanding = 8, maxQueued = 8) {
 }
 
 describe('peerless worker input', () => {
+  test('save skips an untouched draft awaiting prefill', async () => {
+    const { coordinator, draft, sent, saved, ack } = peerlessHarness();
+    coordinator.setDraft({ ...draft(''), modified: false } as InputDraft);
+    const saving = coordinator.save();
+    const writes = sent.filter((command) => command.kind === 'editCell');
+    for (const command of sent) ack(command.seq);
+    await saving;
+    expect(writes).toEqual([]);
+    expect(saved).toEqual([0]);
+  });
+
   test('cut reads after a pending predecessor and reserves its clear before later input', async () => {
     const { coordinator, sent, draft, ack } = peerlessHarness();
     let readThrough: number | undefined;

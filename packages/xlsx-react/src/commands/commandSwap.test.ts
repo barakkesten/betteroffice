@@ -1,9 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { CommandStatus, WorkbookAck } from '@betteroffice/xlsx';
 import type { InputDraft, InputSeal } from './inputCoordinator';
-import {
-  createPeerlessWorkerInputCoordinator, type PeerlessWorkerCommand, type PeerlessWorkerInputEvent,
-} from './workerInputCoordinator';
+import { createPeerlessWorkerInputCoordinator, type PeerlessWorkerCommand, type PeerlessWorkerInputEvent } from './peerlessWorkerInputCoordinator';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

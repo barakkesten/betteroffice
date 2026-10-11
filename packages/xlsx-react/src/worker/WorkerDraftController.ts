@@ -1,6 +1,6 @@
 import type { CellAddr, Direction, Selection, WorkbookCommandSelection, XlsxRangeTarget } from '@betteroffice/xlsx';
 import type { InputDraft, InputSeal } from '../commands/inputCoordinator';
-import type { PeerlessWorkerCommandOptions, PeerlessWorkerCommandTicket, PeerlessWorkerInputCoordinator } from '../commands/workerInputCoordinator';
+import type { PeerlessWorkerCommandOptions, PeerlessWorkerCommandTicket, PeerlessWorkerInputCoordinator } from '../commands/peerlessWorkerInputCoordinator';
 
 export type WorkerNativeDraft = InputDraft & { revision: number; modified: boolean;
   after?: PeerlessWorkerCommandOptions['after']; target?: XlsxRangeTarget };

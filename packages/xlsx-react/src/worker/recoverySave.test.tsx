@@ -12,9 +12,10 @@ import { createWorkbookSessionHost } from '../../../xlsx/src/session/host';
 import {
   createWorkbookRecoverySession, workbookRecoveryBackend, workbookSessionRecovery,
 } from '../../../xlsx/src/session/clientRecovery';
+import { createPeerlessWorkerInputCoordinator } from '../commands/peerlessWorkerInputCoordinator';
 import { createXlsxCommandController } from '../commands/createXlsxCommandStore';
 import { createAsyncEditorApi } from './createAsyncEditorApi';
-import { PeerlessWorkbookSession } from './useEditableSessionWorkbook';
+import { PeerlessWorkbookSession } from './usePeerlessSessionWorkbook';
 
 const calculation = { nowSerial: 46_000.5, randSeed: 123456789 };
 
@@ -45,7 +46,7 @@ function recoveryWorker(change?: (status: CommandStatus) => CommandStatus) {
     createWorkbookSessionHost(pair.host);
     const recovery = await (Reflect.apply(createWorkbookRecoverySession, undefined,
       [args[0], args[1], pair.client, ...args.slice(2)]) as ReturnType<typeof createWorkbookRecoverySession>);
-    return change ? { ...recovery, replay: async (command: WorkbookSharedCommand) => change(await recovery.replay(command)) } : recovery;
+    return change ? { ...recovery, replay: async (command: WorkbookSharedCommand, pending?: boolean) => change(await recovery.replay(command, pending)) } : recovery;
   });
   return open;
 }
@@ -252,6 +253,39 @@ test.each(['undo', 'redo'] as const)('public recovery replays a withheld no-op %
     expect(opener.mock.calls[0][2]?.throughSeq).toBe(1);
     expect(run.readOnly).toBe(true);
   } finally { opener.mockRestore(); await run.dispose(); }
+});
+
+test.each(['source', 'journal', 'checkpoint'] as const)(
+  'public recovery retains edits queued behind an unresolved clipboard read after %s', async (previous) => {
+  const host = crashableHost();
+  const opener = recoveryWorker();
+  const session = await createTestWorkbookSession(await initialPaintBook(), host.wrap, { includeEditState: true, calculation });
+  const { run, api } = recoveryEditor(session);
+  const input = createPeerlessWorkerInputCoordinator({
+    session: () => run.session, generation: () => 1, isReady: () => run.ready,
+    seal: () => ({}), sync: () => {},
+    target: (_sheet, row) => ({ sheetId: session.state.sheets[0].id, range: { kind: 'a1', a1: `A${row + 1}` } }),
+  });
+  run.connectRecoveryInput(input, { compositionId: undefined, subscribe: () => () => {} });
+  try {
+    if (previous !== 'source') {
+      await run.session.submit(recoveryCommand(session, 1, 10, 'earlier'));
+      if (previous === 'checkpoint') await workbookSessionRecovery.get(session)!.capture(() => true);
+    }
+    const paste = input.clipboard(() => new Promise<string>(() => {}), (value) => ({
+      kind: 'editCell', payload: { args: [0, 10, 0, value] },
+    }));
+    const edit = input.submit({ generation: 1, sheet: 0, row: 11, col: 0, source: 'cell', value: 'accepted' });
+    expect(edit.seq).toBeNull();
+    await crashAndWait(session, host);
+    await expect(edit.result).rejects.toThrow();
+    await expect(paste.result).rejects.toThrow();
+    const saved = await api.recoverySave();
+    expect(await recoveredInputs(saved.bytes, 'A12')).toEqual(['accepted']);
+    const again = await api.recoverySave();
+    expect(await recoveredInputs(again.bytes, 'A12')).toEqual(['accepted']);
+    if (previous !== 'source') expect(await recoveredInputs(saved.bytes, 'A11')).toEqual(['earlier']);
+  } finally { input.retire(); opener.mockRestore(); await run.dispose(); }
 });
 
 test('public recovery restores 300 awaited edits without input idle', async () => {

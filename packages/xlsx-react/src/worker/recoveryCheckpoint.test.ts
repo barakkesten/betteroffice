@@ -2,7 +2,7 @@ import { expect, spyOn, test } from 'bun:test';
 import type { WorkbookSession } from '@betteroffice/xlsx';
 import { createWorkbookSessionRecovery, workbookSessionRecovery } from '../../../xlsx/src/session/clientRecovery';
 import { testSessionCommands } from '../commands/testing';
-import { PeerlessWorkbookSession } from './useEditableSessionWorkbook';
+import { PeerlessWorkbookSession } from './usePeerlessSessionWorkbook';
 
 test.each([20, 120, 40])('idle checkpoint waits for twice a %s ms encode or 150 ms', async (encodeMs) => {
   const unexpected = async () => { throw new Error('Unexpected workbook call'); };

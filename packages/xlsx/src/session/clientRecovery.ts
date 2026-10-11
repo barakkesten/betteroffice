@@ -22,11 +22,11 @@ export interface WorkbookSessionRecovery {
   readonly retainedCommands: number;
   readonly checkpointIdleMs: number;
   capture(allowed: () => boolean): Promise<boolean>;
-  save(assertCurrent: () => void): Promise<Uint8Array>;
+  save(assertCurrent: () => void, pending?: readonly Pick<WorkbookCommand, 'kind' | 'payload'>[]): Promise<Uint8Array>;
 }
 
 interface RecoverySession {
-  replay(command: WorkbookSharedCommand): Promise<CommandStatus>;
+  replay(command: WorkbookSharedCommand, pending?: boolean): Promise<CommandStatus>;
   save(): Promise<Uint8Array>;
   dispose(): Promise<void>;
 }
@@ -35,6 +35,7 @@ interface RecoveryEntry {
   command: WorkbookSharedCommand;
   outcome?: CommandStatus;
   identifier?: string;
+  pending?: boolean;
 }
 
 /** @experimental */
@@ -63,12 +64,18 @@ export async function createWorkbookRecoverySession(
         initialViewport: options.initialViewport, includeEditState: true, recoveryVersion: version });
     const context: WorkbookCommandContext | undefined = opened.commandContext;
     if (!context) throw new Error('Workbook recovery omitted command context');
+    let engineVersion = context.basis.version;
+    let revision = checkpoint?.version ?? 0;
     return {
-      async replay(command) {
+      async replay(command, pending = false) {
         const compatibility = command.payload.compatibility;
         const reply = await client.call.edit({ ...command, session: context.session, incarnation: 1, replay: true,
+          ...(pending ? { basis: { epoch: context.basis.epoch, version: revision } } : {}),
           payload: { ...command.payload, ...(compatibility ? { compatibility: { ...compatibility,
-            session: context.session, incarnation: context.incarnation } } : {}) } });
+            session: context.session, incarnation: context.incarnation,
+            ...(pending ? { basis: { epoch: context.basis.epoch, version: engineVersion } } : {}) } } : {}) } });
+        engineVersion = reply.engineVersion;
+        revision = reply.version;
         const outcome = reply.outcomes.find((entry) => entry.seq === command.seq);
         if (!outcome || reply.throughSeq < command.seq) throw new WorkbookRecoveryReplayError(command.seq, 'missing-outcome');
         return outcome.workbook ?? { ...outcome, status: outcome.status === 'duplicate' ? 'noop' : outcome.status };
@@ -106,6 +113,11 @@ export function createWorkbookSessionRecovery(
   let saving: Promise<Uint8Array> | undefined;
   let highSeq = 0;
   const active = () => { if (!source) throw new SessionFailure('disposed', 'Workbook recovery was disposed'); };
+  const normalizePayload = (payload: WorkbookCommand['payload']): WorkbookCommand['payload'] => {
+    if (!liveCalculation || !('args' in payload) || payload.calculation) return payload;
+    return { ...payload, calculation: { nowSerial: localNowSerial(Date.now()),
+      randSeed: globalThis.crypto.getRandomValues(new Uint32Array(1))[0] >>> 0 } };
+  };
   const recovery: WorkbookSessionRecovery = {
     get throughSeq() { return captured?.throughSeq ?? 0; },
     get retainedCommands() { return log.size; },
@@ -130,12 +142,21 @@ export function createWorkbookSessionRecovery(
       })().finally(() => { capture = undefined; });
       return capture;
     },
-    async save(assertCurrent) {
+    async save(assertCurrent, pending = []) {
       active();
       assertCurrent();
       if (saving) return saving;
       saving = (async () => {
         const entries = [...log.values()].sort((left, right) => left.command.seq - right.command.seq);
+        for (const [index, input] of pending.entries()) {
+          const seq = highSeq + index + 1;
+          const payload = normalizePayload(structuredClone(input.payload));
+          entries.push({ pending: true, command: { session: '', incarnation: 1, seq, basis: { epoch, version: 0 },
+            kind: input.kind, payload: { payload, compatibility: {
+              session: '', incarnation: '', seq, basis: { epoch, version: '' },
+              kind: input.kind, payload,
+            } as WorkbookCommand } } });
+        }
         const opened = await workbookRecoveryBackend.open(source!, settings, captured, version);
         try {
           assertCurrent(); active();
@@ -149,7 +170,7 @@ export function createWorkbookSessionRecovery(
               args[0] = identifiers.get(args[0]) ?? args[0];
             }
             if (command.payload.compatibility) command.payload.compatibility.payload = payload;
-            const status = await opened.replay(command);
+            const status = await opened.replay(command, entry.pending);
             assertCurrent(); active();
             const refused = status.status === 'refused' || status.status === 'cancelled';
             const expected = entry.outcome;
@@ -172,11 +193,7 @@ export function createWorkbookSessionRecovery(
   };
   return {
     recovery,
-    normalizePayload(payload: WorkbookCommand['payload']): WorkbookCommand['payload'] {
-      if (!liveCalculation || !('args' in payload) || payload.calculation) return payload;
-      return { ...payload, calculation: { nowSerial: localNowSerial(Date.now()),
-        randSeed: globalThis.crypto.getRandomValues(new Uint32Array(1))[0] >>> 0 } };
-    },
+    normalizePayload,
     admit(input: WorkbookSharedCommand) {
       active();
       if (input.seq <= highSeq) return;

@@ -11,7 +11,8 @@ import type { TFunction } from '@betteroffice/xlsx-i18n';
 import type { XlsxCommandController } from '../commands/createXlsxCommandStore';
 import type { XlsxPluginEditorAccess } from './createPluginClients';
 import type { XlsxPluginDocumentAccess } from './createPluginDocumentAccess';
-import { createPeerlessPluginGeometry } from './createPeerlessPluginDocument';
+import type { createPeerlessPluginGeometry } from './createPeerlessPluginDocument';
+import type { createPluginClients } from './createPluginClients';
 import {
   createXlsxPluginHost,
   type XlsxPluginActivation,
@@ -23,6 +24,8 @@ import type { XlsxEditorPluginProps, XlsxPluginGeometry, XlsxPluginSelection } f
 const NO_ACTIVATIONS: readonly XlsxPluginActivation[] = Object.freeze([]);
 
 export interface UseXlsxPluginHostOptions extends XlsxEditorPluginProps {
+  createClients?: typeof createPluginClients;
+  createGeometry?: typeof createPeerlessPluginGeometry;
   /** Stable; its members read the editor at call time. */
   access: XlsxPluginEditorAccess | XlsxPluginDocumentAccess;
   commands: XlsxCommandController;
@@ -63,7 +66,7 @@ export function useXlsxPluginHost(options: UseXlsxPluginHostOptions): XlsxPlugin
       ...options.access,
       translate: (key) => latest.current.t(key),
       geometry: () => geometryRef.current,
-    })
+    }, options.createClients)
   );
 
   const managed = (options.plugins?.length ?? 0) > 0;
@@ -78,7 +81,7 @@ export function useXlsxPluginHost(options: UseXlsxPluginHostOptions): XlsxPlugin
       installed && host.generation() !== null ? pluginLayout(painted, host.version()) : null;
     geometryRef.current =
       layout && painted && canvas && layer
-        ? 'identity' in latest.current.access ? createPeerlessPluginGeometry(
+        ? 'identity' in latest.current.access ? latest.current.createGeometry?.(
             layout,
             painted,
             canvas,
@@ -91,7 +94,7 @@ export function useXlsxPluginHost(options: UseXlsxPluginHostOptions): XlsxPlugin
               return { version: identity ? access.version(identity) : null,
                 painted: live ? paintedRef.current : null };
             }
-          ) : createPluginGeometry(layout, painted, canvas, layer, () =>
+          ) ?? null : createPluginGeometry(layout, painted, canvas, layer, () =>
               host.layoutId() === layout.id &&
               paintedRef.current === painted &&
               canvas.isConnected &&

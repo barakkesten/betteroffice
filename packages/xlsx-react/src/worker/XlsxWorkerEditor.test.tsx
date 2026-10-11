@@ -18,8 +18,9 @@ import { XlsxCommandProvider } from '../commands/XlsxCommandProvider';
 import { PLAIN_FORMATTING, testSessionCommands } from '../commands/testing';
 import { useXlsxCommands } from '../commands/hooks';
 import { XlsxCommandAdmissionError, xlsxCommandController } from '../commands/createXlsxCommandStore';
-import * as workerInput from '../commands/workerInputCoordinator';
-import type { PeerlessWorkerCommand } from '../commands/workerInputCoordinator';
+
+import * as peerlessInput from '../commands/peerlessWorkerInputCoordinator';
+import type { PeerlessWorkerCommand } from '../commands/peerlessWorkerInputCoordinator';
 import type { XlsxCommandStore } from '../commands/types';
 import { defineXlsxPlugin } from '../plugins/defineXlsxPlugin';
 import type { XlsxPluginContext, XlsxPluginSelection } from '../plugins/types';
@@ -317,6 +318,12 @@ async function opened() {
 }
 
 beforeEach(() => {
+  const originalCanvas = Object.getOwnPropertyDescriptor(globalThis, 'OffscreenCanvas');
+  Object.defineProperty(globalThis, 'OffscreenCanvas', { configurable: true, writable: true, value: class {} });
+  restorers.push(() => {
+    if (originalCanvas) Object.defineProperty(globalThis, 'OffscreenCanvas', originalCanvas);
+    else Reflect.deleteProperty(globalThis, 'OffscreenCanvas');
+  });
   const originalWorker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
   Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: class {} });
   restorers.push(() => {
@@ -529,6 +536,52 @@ function peerlessHarness(toolbarCommands = false, workerCommands = false, defaul
   const fail = (error: SessionFailure) => { for (const listener of failures) listener(error); };
   return { mount, replace, asyncEditor, fail, ready, open, sent, ack, push, session, frame, sheetView, cellInputs, cellGeometry, hydrate, attach, cells, charts,
     renderCount, commands: () => commands };
+}
+
+it('saving while F2 prefill is pending preserves the untouched cell', async () => {
+  const host = peerlessHarness();
+  const ready = mock((_api: XlsxAsyncEditorApi) => {});
+  const view = render(host.asyncEditor({ onReady: ready }));
+  await opened();
+  await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+  const prefill = deferred<Awaited<ReturnType<WorkbookSession['call']['cellInputs']>>>();
+  host.cellInputs.mockImplementationOnce(() => prefill.promise);
+  fireEvent.keyDown(view.getByTestId('xlsx-scroll'), { key: 'F2' });
+  expect((view.getByTestId('xlsx-cell-editor') as HTMLInputElement).value).toBe('');
+  let saving!: Promise<unknown>;
+  await act(async () => {
+    saving = ready.mock.calls[0]![0].commands.execute('save', null);
+    await Promise.resolve();
+  });
+  const edits = host.sent.filter((command) => command.kind === 'editCell');
+  await act(async () => {
+    for (const command of host.sent) host.ack(command);
+    await saving;
+  });
+  expect(edits).toEqual([]);
+  expect(host.cells.get('0:0:0')).toBe('initial');
+  expect(host.session.save).toHaveBeenCalledTimes(1);
+  await act(async () => prefill.resolve({ sheet: 0, version: 'v1',
+    cells: [[{ a1: 'A1', input: 'initial', isFormula: false }]] }));
+  expect(host.cells.get('0:0:0')).toBe('initial');
+});
+
+for (const decision of [true, false, undefined]) {
+  it(`peerless save uses the host decision (${String(decision)})`, async () => {
+    const host = peerlessHarness();
+    const ready = mock((_api: XlsxAsyncEditorApi) => {});
+    const requested = mock(async () => decision);
+    const delivered = mock((_bytes: Uint8Array) => {});
+    render(host.asyncEditor({ onReady: ready, onSaveRequest: requested, onSave: delivered }));
+    await opened();
+    await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+    let result!: unknown;
+    await act(async () => { result = await ready.mock.calls[0]![0].commands.execute('save', null); });
+    expect(result).toEqual({ ok: true, status: decision === true ? 'executed' : 'noop' });
+    expect(requested).toHaveBeenCalledTimes(1);
+    expect(host.session.save).toHaveBeenCalledTimes(decision === true ? 1 : 0);
+    expect(delivered).toHaveBeenCalledTimes(decision === true ? 1 : 0);
+  });
 }
 
 describe('peerless chrome locale', () => {
@@ -2267,9 +2320,9 @@ describe('peerless workbook worker editor', () => {
       const host = peerlessHarness();
       const clipboard = textClipboard();
       const fulfilled = deferred<void>();
-      const create = workerInput.createPeerlessWorkerInputCoordinator;
+      const create = peerlessInput.createPeerlessWorkerInputCoordinator;
       let onRead: (() => void) | undefined;
-      const observed = spyOn(workerInput, 'createPeerlessWorkerInputCoordinator').mockImplementation((hooks) => {
+      const observed = spyOn(peerlessInput, 'createPeerlessWorkerInputCoordinator').mockImplementation((hooks) => {
         const input = create(hooks);
         const runAfterPendingInput = input.runAfterPendingInput;
         input.runAfterPendingInput = (operation, fence) => {
@@ -4439,7 +4492,6 @@ describe('workbook worker editor', () => {
     expect(host.open).not.toHaveBeenCalled();
   });
 });
-
 
 function reviewEdit(view: ReturnType<typeof render>, value: string) {
   fireEvent.keyDown(view.getByTestId('xlsx-scroll'), { key: 'F2' });

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
 import type { Selection, WorkbookSheetSummary } from '@betteroffice/xlsx';
 import type { AwarenessPeer, CollaborationAwareness } from '@betteroffice/xlsx/collaboration';
-import type { PeerlessWorkbookSession } from './useEditableSessionWorkbook';
+import type { PeerlessWorkbookSession } from './usePeerlessSessionWorkbook';
 
 export function usePeerlessPresence(run: PeerlessWorkbookSession | null,
   provider: CollaborationAwareness | null | undefined, active: number,

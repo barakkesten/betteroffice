@@ -1,9 +1,9 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { createXlsxCommandController, XlsxCommandAdmissionError, xlsxCommandController } from '../commands/createXlsxCommandStore';
 import { testBinding } from '../commands/testing';
-import { createAsyncEditorApi } from './createAsyncEditorApi';
+import { createAsyncEditorApi, XlsxAsyncApiSyncAccessError } from './createAsyncEditorApi';
 import type { WorkerEditorApiBridge } from './createWorkerEditorApi';
-import type { PeerlessWorkbookSession } from './useEditableSessionWorkbook';
+import type { PeerlessWorkbookSession } from './usePeerlessSessionWorkbook';
 
 function apiSession() {
   return { current: true, retiring: false, ready: true, failure: null, session: {},
@@ -13,6 +13,26 @@ function apiSession() {
 const bridge = { focus: mock(() => {}) } as unknown as WorkerEditorApiBridge;
 
 describe('async editor commands', () => {
+  for (const [member, alternative] of [
+    ['save', 'commands.execute("save", null)'], ['handle', 'commands'],
+    ['cell', 'plugin.read.readCells'], ['rangeCells', 'plugin.read.readCells'],
+    ['readCellsSync', 'plugin.read.readCells'], ['editCell', 'plugin.edits.applyEdits'],
+    ['applyEdits', 'plugin.edits.applyEdits'], ['selectCells', 'plugin.navigation.selectCells'],
+    ['undo', 'commands.execute("undo", null)'], ['redo', 'commands.execute("redo", null)'],
+  ]) {
+    it(`directs legacy ${member} access to ${alternative}`, () => {
+      const api = createAsyncEditorApi(apiSession(), createXlsxCommandController().store, () => bridge);
+      let refusal: unknown;
+      try {
+        const value = Reflect.get(api, member);
+        if (typeof value === 'function') value();
+      } catch (error) { refusal = error; }
+      expect(refusal).toBeInstanceOf(XlsxAsyncApiSyncAccessError);
+      expect(refusal).toMatchObject({ name: 'XlsxAsyncApiSyncAccessError', code: 'sync-api-unavailable', member, alternative });
+      expect((refusal as Error).message).toContain(alternative);
+    });
+  }
+
   it('delegates state and subscriptions while keeping execution on its workbook', async () => {
     const controller = createXlsxCommandController();
     const firstBinding = testBinding();

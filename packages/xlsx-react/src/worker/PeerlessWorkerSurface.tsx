@@ -6,7 +6,7 @@ import type { CollaborationAwareness } from '@betteroffice/xlsx/collaboration';
 import { useTranslation } from '../i18n';
 import { expandRangeToMergedCells, scaledRect } from '../viewer/sessionGeometry';
 import { PeerlessWorkerCellInput, usePeerlessReadOnly } from './PeerlessWorkerInputs';
-import type { PeerlessWorkbookSession } from './useEditableSessionWorkbook';
+import type { PeerlessWorkbookSession } from './usePeerlessSessionWorkbook';
 import type { WorkerDraftController } from './WorkerDraftController';
 import { WorkerPresentationStore, useWorkerPresentation } from './WorkerPresentationStore';
 import { PresenceStrip, RemoteSelections } from '../presence/Presence';

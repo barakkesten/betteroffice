@@ -322,6 +322,8 @@ function pluginWorker(sheetCount = 2) {
     save: async () => new Uint8Array([1]),
     dispose: mock(async () => {}),
   } as unknown as WorkbookSession;
+  const canvas = Object.getOwnPropertyDescriptor(globalThis, 'OffscreenCanvas');
+  Object.defineProperty(globalThis, 'OffscreenCanvas', { configurable: true, value: class {} });
   const worker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
   Object.defineProperty(globalThis, 'Worker', { configurable: true, value: class {} });
   const open = spyOn(editableWorkbookSessionBackend, 'open').mockResolvedValue(session);
@@ -383,6 +385,8 @@ function pluginWorker(sheetCount = 2) {
     fail() { for (const listener of failures) listener(new Error('Worker closed') as Parameters<typeof listener>[0]); },
     restore() {
       cleanup(); open.mockRestore(); hydrate.mockRestore(); attach.mockRestore(); raf.mockRestore(); caf.mockRestore();
+      if (canvas) Object.defineProperty(globalThis, 'OffscreenCanvas', canvas);
+      else Reflect.deleteProperty(globalThis, 'OffscreenCanvas');
       if (worker) Object.defineProperty(globalThis, 'Worker', worker);
       else Reflect.deleteProperty(globalThis, 'Worker');
     },

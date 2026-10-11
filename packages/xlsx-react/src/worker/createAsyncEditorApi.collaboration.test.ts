@@ -5,7 +5,8 @@ import { SessionFailure } from '../../../../shared/office-session';
 import { createXlsxCommandController } from '../commands/createXlsxCommandStore';
 import { testSessionCommands } from '../commands/testing';
 import { createAsyncEditorApi } from './createAsyncEditorApi';
-import { PeerlessWorkbookSession, XlsxWorkerSessionFailedError } from './useEditableSessionWorkbook';
+import { XlsxWorkerSessionFailedError } from './useEditableSessionWorkbook';
+import { PeerlessWorkbookSession } from './usePeerlessSessionWorkbook';
 
 function deferred<T>() {
   let reject!: (error: unknown) => void;

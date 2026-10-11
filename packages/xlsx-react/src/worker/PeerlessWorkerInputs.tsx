@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { commandForEvent } from '../commands/descriptors';
 import { FormulaBarContext, type FormulaBarBinding } from '../components/toolbar/FormulaBar';
 import type { WorkerDraftController } from './WorkerDraftController';
-import type { PeerlessWorkbookSession } from './useEditableSessionWorkbook';
+import type { PeerlessWorkbookSession } from './usePeerlessSessionWorkbook';
 import type { WorkerPresentationStore } from './WorkerPresentationStore';
 
 export const PeerlessWorkerInputs = memo(function PeerlessWorkerInputs({ controller, presentation, run, active,

@@ -2,7 +2,7 @@ import { grantsEditBatch } from '../../../../shared/plugin-host/grants';
 import type { PluginInvocation } from '../../../../shared/plugin-host/runtime';
 import type { XlsxCommandStore } from '../commands/types';
 import {
-  ALIGNMENTS, NAVIGATION_MESSAGES, pluginRefusal, unlessAborted, type XlsxPluginClients,
+  ALIGNMENTS, NAVIGATION_MESSAGES, pluginRefusal, unlessAborted, type XlsxPluginClients, type XlsxPluginEditorAccess,
 } from './createPluginClients';
 import type { XlsxPluginDocumentAccess } from './createPluginDocumentAccess';
 import type {
@@ -13,10 +13,11 @@ import type {
 
 export function createPeerlessPluginClients(
   invocation: PluginInvocation<XlsxPluginSnapshot>,
-  access: XlsxPluginDocumentAccess,
+  access: XlsxPluginDocumentAccess | XlsxPluginEditorAccess,
   grant: () => XlsxPluginGrant,
   store: XlsxCommandStore
 ): XlsxPluginClients {
+  if (!('identity' in access)) throw new Error('Async plugin clients require document access');
   const refusal = () => {
     const code = invocation.refusal();
     return code ? pluginRefusal(code) : null;

@@ -14,7 +14,6 @@ import {
 } from '../commands/createXlsxCommandStore';
 import { isPluginCommandId, XLSX_COMMAND_DESCRIPTORS } from '../commands/descriptors';
 import type { XlsxCommandStore } from '../commands/types';
-import { createPeerlessPluginClients } from './createPeerlessPluginClients';
 import type { XlsxPluginDocumentAccess } from './createPluginDocumentAccess';
 import type {
   XlsxPluginCommandClient,
@@ -187,7 +186,7 @@ export function createPluginClients(
   grant: () => XlsxPluginGrant,
   store: XlsxCommandStore
 ): XlsxPluginClients {
-  if ('identity' in access) return createPeerlessPluginClients(invocation, access, grant, store);
+  if ('identity' in access) throw new Error('Document access requires async plugin clients');
   /**
    * Runs `use` after pending input, checking this invocation in the same step. A superseded or
    * ended invocation refuses at once rather than waiting for the input ahead of it; once `use`

@@ -1,7 +1,7 @@
 import type { XlsxEditFailureCode, XlsxEditRequest, XlsxEditResult } from '@betteroffice/xlsx';
 import { XlsxCommandAdmissionError } from '../commands/createXlsxCommandStore';
-import { PeerlessWorkerCommandRefusal, type PeerlessWorkerInputCoordinator } from '../commands/workerInputCoordinator';
-import type { PeerlessWorkbookSession } from '../worker/useEditableSessionWorkbook';
+import { PeerlessWorkerCommandRefusal, type PeerlessWorkerInputCoordinator } from '../commands/peerlessWorkerInputCoordinator';
+import type { PeerlessWorkbookSession } from '../worker/usePeerlessSessionWorkbook';
 import { pluginRefusal, unlessAborted, type XlsxAdmission } from './createPluginClients';
 import type { XlsxPluginDocumentAccess } from './createPluginDocumentAccess';
 import { createPluginGeometry, type PaintedGrid } from './geometry';

@@ -13,9 +13,9 @@ import { createAsyncEditorApi, type XlsxAsyncEditorApi } from './createAsyncEdit
 import { PeerlessWorkerPaintSource as WorkerPaintSource, type WorkerPaintRequest } from './PeerlessWorkerPaintSource';
 import {
   EditableWorkbookSession, editableWorkbookSessionBackend, useEditableSessionWorkbook,
-  PeerlessWorkbookSession, XlsxWorkerSessionFailedError,
-  type EditableSessionWorkbookProps, type EditableWorkbookSessionOptions,
+  XlsxWorkerSessionFailedError, type EditableSessionWorkbookProps, type EditableWorkbookSessionOptions,
 } from './useEditableSessionWorkbook';
+import { PeerlessWorkbookSession, usePeerlessSessionWorkbook } from './usePeerlessSessionWorkbook';
 
 const ownsDom = !GlobalRegistrator.isRegistered;
 if (ownsDom) GlobalRegistrator.register();
@@ -325,7 +325,7 @@ describe('editable session workbook', () => {
     const binding = testBinding();
     controller.attach(binding.binding);
     const commands = controller.store;
-    const { result, unmount } = renderHook(() => useEditableSessionWorkbook({ file, onReady: ready }, commands, bridge(), {
+    const { result, unmount } = renderHook(() => usePeerlessSessionWorkbook({ file, onReady: ready }, commands, bridge(), {
       backend: 'peerless', initialViewport: () => ({ width: 800, height: 600, zoom: 1, dpr: 1, requestGeneration: 1 }),
     }));
     await waitFor(() => expect(result.current.run).toBeInstanceOf(PeerlessWorkbookSession));
@@ -390,7 +390,7 @@ describe('editable session workbook', () => {
     Object.assign(value.call, { command, applyEdits, version: async () => 'v1', frame: async () => initial });
     open(value);
     const commands = createXlsxCommandController().store;
-    const { result } = renderHook(() => useEditableSessionWorkbook({ file }, commands, bridge(), { backend: 'peerless' }));
+    const { result } = renderHook(() => usePeerlessSessionWorkbook({ file }, commands, bridge(), { backend: 'peerless' }));
     await waitFor(() => expect(result.current.run).not.toBeNull());
     const run = result.current.run!;
     const input: WorkbookCommand = { ...value.commandIdentity, seq: 1, basis: value.confirmedBasis,
@@ -471,7 +471,7 @@ describe('editable session workbook', () => {
     const ready = mock((_api: XlsxAsyncEditorApi) => {});
     const commands = createXlsxCommandController().store;
     let viewport: { width: number; height: number; zoom: number; dpr: number; requestGeneration: number } | undefined;
-    const { result, rerender } = renderHook(() => useEditableSessionWorkbook({ file, onReady: ready }, commands, bridge(), {
+    const { result, rerender } = renderHook(() => usePeerlessSessionWorkbook({ file, onReady: ready }, commands, bridge(), {
       backend: 'peerless', initialViewport: () => viewport,
     }));
     await waitFor(() => expect(result.current.run).not.toBeNull());
@@ -514,7 +514,7 @@ describe('editable session workbook', () => {
     const commands = createXlsxCommandController().store;
     const controls = bridge();
     const { result, rerender } = renderHook((props: { file: Uint8Array }) =>
-      useEditableSessionWorkbook(props, commands, controls, { backend: 'peerless' }), { initialProps: { file } });
+      usePeerlessSessionWorkbook(props, commands, controls, { backend: 'peerless' }), { initialProps: { file } });
     rerender({ file: new Uint8Array([4]) });
     await waitFor(() => expect(result.current.run?.session.state).toBe(next.value.state));
     await act(async () => pending.resolve(old.value));
@@ -662,7 +662,7 @@ describe('editable session workbook', () => {
     const ready = mock((_api: XlsxAsyncEditorApi) => {});
     const commands = createXlsxCommandController().store;
     const { result, rerender } = renderHook((props: { peerless: boolean }) =>
-      useEditableSessionWorkbook({ file, onReady: ready }, commands, bridge(), {
+      usePeerlessSessionWorkbook({ file, onReady: ready }, commands, bridge(), {
         backend: (props.peerless ? 'peerless' : 'legacy') as 'peerless',
       }), {
       initialProps: { peerless: true }, reactStrictMode: true,

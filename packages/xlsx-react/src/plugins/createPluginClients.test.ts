@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'bun:test';
 import { selectionAt, type WorkbookHandle } from '@betteroffice/xlsx';
+import { createPeerlessPluginClients } from './createPeerlessPluginClients';
 import { createXlsxPluginHost } from './createXlsxPluginHost';
 import type { XlsxPluginEditorAccess } from './createPluginClients';
 import type { XlsxPluginDocumentAccess } from './createPluginDocumentAccess';
@@ -69,7 +70,7 @@ test('a fulfilled worker read refuses a replaced document before returning', asy
     commands: () => null,
     navigator: { selectCells: () => null, scrollToCell: () => null },
   };
-  const host = createXlsxPluginHost({ ...access, geometry: () => null, translate: (key) => key });
+  const host = createXlsxPluginHost({ ...access, geometry: () => null, translate: (key) => key }, createPeerlessPluginClients);
   host.setPlugins([defineXlsxPlugin({ id: 'reader', createState: () => null,
     initialize: (next) => { context = next; } })]);
   host.open(identity);

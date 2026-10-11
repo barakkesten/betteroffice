@@ -610,7 +610,8 @@ function XlsxAsyncEditorRefusal({ failure, onError }: Pick<XlsxAsyncEditorProps,
 
 function XlsxPeerlessEditor(props: XlsxAsyncEditorProps) {
   const inThread = (props as { experimentalWorkerOpen?: boolean }).experimentalWorkerOpen === false;
-  const choose = () => inThread || typeof Worker !== 'function' ? new XlsxAsyncApiUnavailableError() : null;
+  const choose = () => inThread || typeof Worker !== 'function' ? new XlsxAsyncApiUnavailableError()
+    : typeof OffscreenCanvas !== 'function' ? new XlsxAsyncApiUnavailableError('OffscreenCanvas') : null;
   const [session, setSession] = useState(() => ({ file: props.file, collaboration: props.collaboration,
     inThread, failure: choose() }));
   if (session.file !== props.file || session.collaboration !== props.collaboration || session.inThread !== inThread) {

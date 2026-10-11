@@ -9,7 +9,8 @@ import { createWorkbookSession } from '../../../xlsx/src/session/client';
 import { createWorkbookSessionHost } from '../../../xlsx/src/session/host';
 import { WorkerCellEcho } from './WorkerCellEcho';
 import { PeerlessWorkerPaintSource as WorkerPaintSource, type WorkerPaintRequest, type WorkerPaintResult } from './PeerlessWorkerPaintSource';
-import { PeerlessWorkbookSession, XlsxWorkerSessionFailedError } from './useEditableSessionWorkbook';
+import { XlsxWorkerSessionFailedError } from './useEditableSessionWorkbook';
+import { PeerlessWorkbookSession } from './usePeerlessSessionWorkbook';
 
 let bytes: Uint8Array;
 

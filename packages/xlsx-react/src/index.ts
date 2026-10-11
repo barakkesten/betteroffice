@@ -15,6 +15,7 @@ export type {
 /** @experimental */
 export type { XlsxAsyncEditorProps, XlsxWorkerEditorProps } from './XlsxEditor';
 /** @experimental */
+export { XlsxAsyncApiSyncAccessError } from './worker/asyncApiErrors';
 export type { XlsxAsyncEditorApi } from './worker/createAsyncEditorApi';
 /** @experimental */
 export type { XlsxWorkerEditorApi } from './worker/createWorkerEditorApi';

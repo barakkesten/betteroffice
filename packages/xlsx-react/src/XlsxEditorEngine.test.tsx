@@ -107,6 +107,12 @@ function inThreadPainting() {
 }
 
 beforeEach(() => {
+  const originalCanvas = Object.getOwnPropertyDescriptor(globalThis, 'OffscreenCanvas');
+  Object.defineProperty(globalThis, 'OffscreenCanvas', { configurable: true, writable: true, value: class {} });
+  restorers.push(() => {
+    if (originalCanvas) Object.defineProperty(globalThis, 'OffscreenCanvas', originalCanvas);
+    else Reflect.deleteProperty(globalThis, 'OffscreenCanvas');
+  });
   const originalWorker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
   availableWorker();
   const warning = spyOn(console, 'warn').mockImplementation(warn);
@@ -179,6 +185,27 @@ describe('XlsxEditor engine dispatch', () => {
     availableWorker();
     view.rerender(<XlsxEditor {...asyncProps} file={file} />);
     expect(view.getByTestId('worker-editor').getAttribute('data-backend')).toBe('peerless');
+  });
+
+  it('refuses the async editor without OffscreenCanvas until a new file', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'OffscreenCanvas');
+    Reflect.deleteProperty(globalThis, 'OffscreenCanvas');
+    restorers.push(() => {
+      if (original) Object.defineProperty(globalThis, 'OffscreenCanvas', original);
+      else Reflect.deleteProperty(globalThis, 'OffscreenCanvas');
+    });
+    const host = inThreadWorkbook();
+    const onError = mock((_error: Error) => {});
+    const ready = mock((_api: XlsxAsyncEditorApi) => {});
+    const view = render(<XlsxEditor {...asyncProps} file={file} onReady={ready} onError={onError} />);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]![0]).toMatchObject({
+      name: 'XlsxAsyncApiUnavailableError', code: 'async-api-unavailable', message: 'asyncApi requires OffscreenCanvas',
+    });
+    expectAsyncRefusal(view);
+    expect(ready).not.toHaveBeenCalled();
+    expect(host.open).not.toHaveBeenCalled();
+    expect(host.init).not.toHaveBeenCalled();
   });
 
   it('refuses the async editor without Worker until a new file', () => {
