@@ -9,8 +9,8 @@ import type {
   CapturedFormat, CellAddr, CellEdit, CellInputEdit, Direction, EditResult, Proposal, Selection,
   WorkbookFrame, WorkbookHandle, WorkbookReplayOp, WorkbookSheetView, XlsxEditResult,
 } from '@betteroffice/xlsx';
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent, MouseEvent, SetStateAction, SyntheticEvent } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode, SetStateAction, SyntheticEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { createXlsxCommandController, XlsxCommandAdmissionError } from '../commands/createXlsxCommandStore';
 import { commandForEvent } from '../commands/descriptors';
@@ -40,7 +40,7 @@ import { ProposalsPanel } from '../proposals/ProposalsPanel';
 import { deriveLimits, expandRangeToMergedCells, positionAtPoint, scaledRect } from '../viewer/sessionGeometry';
 import type { WorkerEditorApiBridge } from './createWorkerEditorApi';
 
-import { useLegacySessionWorkbook, EditableWorkbookSession, type EditableSessionWorkbookProps } from './useEditableSessionWorkbook';
+import { asError, useLegacySessionWorkbook, EditableWorkbookSession, type EditableSessionWorkbookProps } from './useEditableSessionWorkbook';
 import type { PeerlessSessionWorkbookProps } from './usePeerlessSessionWorkbook';
 import type { WorkerPaintRequest, WorkerPaintResult } from './WorkerPaintSource';
 import { WorkerPaintSource } from './WorkerPaintSource';
@@ -103,16 +103,58 @@ function revealAxis(position: number, size: number, frozen: boolean, scroll: num
   return position < scroll || size >= body ? position : Math.max(0, position + size - body);
 }
 
-const XlsxPeerlessWorkerEditor = lazy(() => import('./XlsxPeerlessWorkerEditor')
-  .then((module) => ({ default: module.XlsxPeerlessWorkerEditor })));
+export const xlsxPeerlessEditorLoader = { load: () => import('./XlsxPeerlessWorkerEditor') };
+
+export class XlsxWorkerEditorChunkLoadError extends Error {
+  readonly code = 'chunk-load-failed';
+  constructor(readonly cause: unknown) {
+    super('Failed to load the worker editor. Remount the editor to retry.');
+    this.name = 'XlsxWorkerEditorChunkLoadError';
+  }
+}
+
+type PeerlessEditorBoundaryProps = Pick<PeerlessSessionWorkbookProps, 'onError' | 'className'> & {
+  children: ReactNode;
+};
+
+function PeerlessEditorError({ error, className }: { error: Error; className?: string }) {
+  const { t } = useTranslation();
+  return <div data-testid="xlsx-error" role="alert" className={className}>
+    {t('editor.openError')}: {error.message}
+  </div>;
+}
+
+class PeerlessEditorBoundary extends Component<PeerlessEditorBoundaryProps, { error: Error | null }> {
+  state = { error: null as Error | null };
+  private reported: Error | null = null;
+
+  static getDerivedStateFromError(error: unknown) { return { error: asError(error) }; }
+
+  componentDidCatch() {
+    const error = this.state.error;
+    if (!error || this.reported === error) return;
+    this.reported = error;
+    try { this.props.onError?.(error); } catch {}
+  }
+
+  render() {
+    return this.state.error ? <PeerlessEditorError error={this.state.error} className={this.props.className} />
+      : this.props.children;
+  }
+}
 
 type XlsxWorkerEditorProps = (EditableSessionWorkbookProps & { backend?: 'legacy' }) |
   (PeerlessSessionWorkbookProps & { backend: 'peerless' });
 
 export function XlsxWorkerEditor(props: XlsxWorkerEditorProps) {
   const backend = useRef(props.backend ?? 'legacy').current;
+  const [XlsxPeerlessWorkerEditor] = useState(() => lazy(() => xlsxPeerlessEditorLoader.load()
+    .then((module) => ({ default: module.XlsxPeerlessWorkerEditor }))
+    .catch((cause: unknown) => { throw new XlsxWorkerEditorChunkLoadError(cause); })));
   return backend === 'peerless' ? <LocaleProvider i18n={props.i18n}>
-    <Suspense fallback={null}><XlsxPeerlessWorkerEditor {...(props as PeerlessSessionWorkbookProps)} /></Suspense>
+    <PeerlessEditorBoundary onError={props.onError} className={props.className}>
+      <Suspense fallback={null}><XlsxPeerlessWorkerEditor {...(props as PeerlessSessionWorkbookProps)} /></Suspense>
+    </PeerlessEditorBoundary>
   </LocaleProvider> :
     <LegacyXlsxWorkerEditor {...(props as EditableSessionWorkbookProps)} />;
 }

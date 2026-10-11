@@ -23,6 +23,7 @@ export type { XlsxWorkerEditorApi } from './worker/createWorkerEditorApi';
 export { XlsxAsyncApiUnavailableError, XlsxPeerNotReadyError, XlsxWorkerEditorCollaborationError } from './worker/createWorkerEditorApi';
 /** @experimental */
 export { XlsxWorkerSessionFailedError } from './worker/useEditableSessionWorkbook';
+export { XlsxWorkerEditorChunkLoadError } from './worker/XlsxWorkerEditor';
 export { EditorToolbar } from './components/EditorToolbar';
 export {
   Toolbar,

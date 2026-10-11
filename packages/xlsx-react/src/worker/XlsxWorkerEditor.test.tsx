@@ -1,7 +1,7 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import type { AwarenessPeer, CollaborationReplica } from '@betteroffice/xlsx/collaboration';
 import { createAsyncCollaborationReplica } from '@betteroffice/xlsx/collaboration';
-import { Profiler } from 'react';
+import { Profiler, StrictMode } from 'react';
 import { flushSync } from 'react-dom';
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as xlsx from '@betteroffice/xlsx';
@@ -26,7 +26,7 @@ import { defineXlsxPlugin } from '../plugins/defineXlsxPlugin';
 import type { XlsxPluginContext, XlsxPluginSelection } from '../plugins/types';
 import { workbookSessionOpener } from '../viewer/useSessionWorkbook';
 import { XlsxAsyncApiUnavailableError, XlsxWorkerEditorCollaborationError, type XlsxWorkerEditorApi } from './createWorkerEditorApi';
-import { XlsxWorkerEditor } from './XlsxWorkerEditor';
+import { XlsxWorkerEditor, xlsxPeerlessEditorLoader } from './XlsxWorkerEditor';
 import { editableWorkbookSessionBackend } from './useEditableSessionWorkbook';
 
 const ownsDom = !GlobalRegistrator.isRegistered;
@@ -1297,6 +1297,79 @@ describe('XlsxEditor async API', () => {
     expect(host.session.throughSeq).toBe(4);
     expect(painted[painted.length - 1].commands.some((command) =>
       command.op === 'text' && command.text === 'read-only remote')).toBe(true);
+    expect(host.hydrate).not.toHaveBeenCalled();
+    expect(host.attach).not.toHaveBeenCalled();
+  });
+});
+
+describe('peerless editor chunk failures', () => {
+  beforeEach(() => {
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    restorers.push(() => errors.mockRestore());
+  });
+
+  async function rejectChunk(reject: (reason: unknown) => void, failure: Error) {
+    try { await act(async () => { reject(failure); }); }
+    catch (error) { if (error !== failure) throw error; }
+  }
+
+  it('keeps host siblings mounted and shows the editor error after a rejected import', async () => {
+    const chunk = deferred<Awaited<ReturnType<typeof xlsxPeerlessEditorLoader.load>>>();
+    const load = spyOn(xlsxPeerlessEditorLoader, 'load').mockReturnValue(chunk.promise);
+    restorers.push(() => load.mockRestore());
+    const view = render(<><span>Host sibling</span><XlsxWorkerEditor backend="peerless" file={file} /></>);
+    await rejectChunk(chunk.reject, new Error('Chunk fetch failed'));
+
+    expect(view.queryByText('Host sibling')).not.toBeNull();
+    expect(view.getByTestId('xlsx-error').getAttribute('role')).toBe('alert');
+    expect(view.getByTestId('xlsx-error').textContent).toContain('Failed to load');
+  });
+
+  it('reports a typed chunk load error once even when the host callback throws', async () => {
+    const chunk = deferred<Awaited<ReturnType<typeof xlsxPeerlessEditorLoader.load>>>();
+    const load = spyOn(xlsxPeerlessEditorLoader, 'load').mockReturnValue(chunk.promise);
+    restorers.push(() => load.mockRestore());
+    const onError = mock((_error: Error) => { throw new Error('Host callback failed'); });
+    const view = render(<StrictMode><span>Host sibling</span>
+      <XlsxWorkerEditor backend="peerless" file={file} onError={onError} />
+    </StrictMode>);
+    const failure = new Error('Chunk fetch failed');
+    await rejectChunk(chunk.reject, failure);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toBeInstanceOf(Error);
+    expect(onError.mock.calls[0][0]).toMatchObject({
+      name: 'XlsxWorkerEditorChunkLoadError', code: 'chunk-load-failed', cause: failure,
+    });
+    view.rerender(<StrictMode><span>Host sibling</span>
+      <XlsxWorkerEditor backend="peerless" file={new Uint8Array([4])} onError={onError} />
+    </StrictMode>);
+    await advance();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(view.queryByText('Host sibling')).not.toBeNull();
+  });
+
+  it('retries a transient import failure on a later mount without opening a main-thread peer', async () => {
+    const host = peerlessHarness();
+    const chunk = deferred<Awaited<ReturnType<typeof xlsxPeerlessEditorLoader.load>>>();
+    const originalLoad = xlsxPeerlessEditorLoader.load;
+    const load = spyOn(xlsxPeerlessEditorLoader, 'load').mockImplementation(originalLoad)
+      .mockReturnValueOnce(chunk.promise);
+    restorers.push(() => load.mockRestore());
+    const onError = mock((_error: Error) => {});
+    const failed = render(<XlsxWorkerEditor backend="peerless" file={file} onError={onError} />);
+    const failure = new Error('Transient chunk fetch failure');
+    await rejectChunk(chunk.reject, failure);
+    failed.unmount();
+
+    try {
+      render(<XlsxWorkerEditor backend="peerless" file={file} onError={onError} onReady={host.ready} />);
+      await opened();
+    } catch (error) { if (error !== failure) throw error; }
+
+    expect(load).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(host.ready).toHaveBeenCalledTimes(1));
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(host.open).toHaveBeenCalledTimes(1);
     expect(host.hydrate).not.toHaveBeenCalled();
     expect(host.attach).not.toHaveBeenCalled();
   });
