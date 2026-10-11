@@ -29,6 +29,7 @@ import type {
   PptxFindResult,
   PptxReadRequest,
   PptxReadResult,
+  PptxTextField,
   PptxValidationResult,
 } from '../edits';
 import type {
@@ -91,6 +92,19 @@ export interface OpenPresentationOptions {
 
 export type UndoCaptureMode = 'auto' | 'manual';
 
+export interface PresentationHistoryReceipt {
+  applied: boolean;
+  changedSlideIds: string[];
+  deckSizeChanged: boolean;
+  slideOrderChanged: boolean;
+}
+
+export type PresentationCommandReadResult = Extract<PptxReadResult, { ok: false }> | (
+  Extract<PptxReadResult, { ok: true }> & { sources: { storyId: string; paragraphs: {
+    paragraphId: string; text: string; fields: PptxTextField[]; editable: boolean;
+  }[] }[] }
+);
+
 export interface PresentationHandle extends CollaborationReplica {
   isProposalsAvailable(): boolean;
   propose(agentId: string, note: string | null, edits: readonly ProposalEdit[]): Proposal;
@@ -114,6 +128,8 @@ export interface PresentationHandle extends CollaborationReplica {
   version(): string;
   /** Slides and their stories' text, with the version they were read at. */
   readContent(request?: PptxReadRequest): PptxReadResult;
+  readCommandContent(request?: PptxReadRequest): PresentationCommandReadResult;
+  historyStep(direction: 'undo' | 'redo'): PresentationHistoryReceipt;
   /** Exact, case-sensitive, paragraph-local search; overlapping matches count separately. */
   findText(request: PptxFindRequest): PptxFindResult;
   /**
@@ -387,6 +403,15 @@ type PresentationMetadata = {
   size: { width: number; height: number };
 };
 const metadataReaders = new WeakMap<PresentationHandle, () => PresentationMetadata>();
+const storyFormattingReaders = new WeakMap<PresentationHandle, (target: PptxStoryFormattingTarget) => StorySnapshot>();
+type PptxStoryFormattingTarget = { slideId: string; shapeId: string; storyId: string };
+type StoryFormattingDocument = PptxDocument & { storyFormattingJson(args: string): string };
+
+export function presentationStoryFormatting(handle: PresentationHandle, target: PptxStoryFormattingTarget): StorySnapshot {
+  const read = storyFormattingReaders.get(handle);
+  if (!read) throw new Error('Presentation story formatting is unavailable');
+  return read(target);
+}
 
 export function presentationMetadata(handle: PresentationHandle): PresentationMetadata {
   const read = metadataReaders.get(handle);
@@ -687,6 +712,13 @@ function openPresentationInternal(
     readContent(request = {}) {
       const json = requestJson(request);
       return jsonWasmCall(() => doc.readContentJson(json));
+    },
+    readCommandContent(request = {}) {
+      const json = requestJson(request);
+      return jsonWasmCall(() => doc.readCommandContentJson(json));
+    },
+    historyStep(direction) {
+      return jsonWasmCall(() => direction === 'undo' ? doc.undoReceiptJson() : doc.redoReceiptJson(), true);
     },
     findText(request) {
       const json = requestJson(request);
@@ -1049,6 +1081,11 @@ function openPresentationInternal(
   metadataReaders.set(handle, () =>
     jsonWasmCall(() => (doc as SessionMetadataDocument).sessionMetadataJson())
   );
+  storyFormattingReaders.set(handle, (target) =>
+    jsonWasmCall(() => (doc as StoryFormattingDocument).storyFormattingJson(JSON.stringify({
+      slideId: target.slideId, shapeId: target.shapeId, storyId: target.storyId,
+    })))
+  );
   Object.defineProperty(handle, Symbol.for('@betteroffice/pptx/slide-layout-cache'), {
     value: {
       snapshot: (): { snapshot: DeckSnapshot; keys: Record<string, string> } =>
@@ -1164,7 +1201,7 @@ function openPresentationInternal(
     for (const method of [
       ...replayMethods, 'insertTextProfiled', 'deleteTextProfiled', 'insertSlideProfiled',
       'addTextBoxProfiled', 'moveShapeProfiled', 'undoProfiled', 'applyUpdate',
-      'setUndoCaptureMode', 'registerFont', 'registerFallbackFont',
+      'setUndoCaptureMode', 'registerFont', 'registerFallbackFont', 'historyStep', 'readCommandContent',
     ] as const) {
       Object.defineProperty(handle, method, {
         value: () => { throw new PresentationPeerError('stage', 'Retained presentations require ordered replay'); },

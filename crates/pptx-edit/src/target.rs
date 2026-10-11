@@ -98,6 +98,33 @@ pub struct ReadResponse {
     pub stories: Vec<StoryText>,
 }
 
+#[cfg(any(feature = "wasm", test))]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommandReadResponse {
+    #[serde(flatten)]
+    read: ReadResponse,
+    sources: Vec<CommandStorySource>,
+}
+
+#[cfg(any(feature = "wasm", test))]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandStorySource {
+    story_id: String,
+    paragraphs: Vec<CommandParagraphSource>,
+}
+
+#[cfg(any(feature = "wasm", test))]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandParagraphSource {
+    paragraph_id: String,
+    text: String,
+    fields: Vec<TextField>,
+    editable: bool,
+}
+
 /// One story's projected text.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -831,6 +858,67 @@ impl DeckSession {
             return Ok(Err(refusal(version, request_limit())));
         }
         let snapshot = self.snapshot()?;
+        self.read_snapshot(request, snapshot, version)
+    }
+
+    #[cfg(any(feature = "wasm", test))]
+    pub(crate) fn read_command_content(
+        &self,
+        request: &ReadRequest,
+    ) -> EditResult<Result<CommandReadResponse, EditRefusal>> {
+        self.enable_history_receipts()?;
+        let version = self.version();
+        if !ByteBudget::new(MAX_REQUEST_BYTES).charge(request) {
+            return Ok(Err(refusal(version, request_limit())));
+        }
+        let snapshot = match &request.slide_ids {
+            Some(ids) => crate::deck::snapshot_selected_slides(&self.doc, &self.package, ids)?,
+            None => self.snapshot()?,
+        };
+        let read = match self.read_snapshot(request, snapshot, version)? {
+            Ok(read) => read,
+            Err(error) => return Ok(Err(error)),
+        };
+        let mut sources = Vec::new();
+        for slide in &read.slides {
+            for shape in shapes_in_order(&slide.shapes) {
+                for story in &shape.text_stories {
+                    let Some(body) = source_body(&self.package, slide, shape, &story.id) else {
+                        continue;
+                    };
+                    let mut paragraphs = Vec::new();
+                    for paragraph in &story.paragraphs {
+                        let Some(source) = source_paragraph(body, &story.id, &paragraph.id) else {
+                            continue;
+                        };
+                        let text: String =
+                            source.runs.iter().map(|run| run.text.as_str()).collect();
+                        let (fields, editable) = located_fields(source, &text, 0);
+                        if !fields.is_empty() || !editable {
+                            paragraphs.push(CommandParagraphSource {
+                                paragraph_id: paragraph.id.clone(),
+                                text,
+                                fields,
+                                editable,
+                            });
+                        }
+                    }
+                    sources.push(CommandStorySource {
+                        story_id: story.id.clone(),
+                        paragraphs,
+                    });
+                }
+            }
+        }
+        Ok(Ok(CommandReadResponse { read, sources }))
+    }
+
+    fn read_snapshot(
+        &self,
+        request: &ReadRequest,
+        snapshot: DeckSnapshot,
+        version: DocumentVersion,
+    ) -> EditResult<ReadOutcome> {
         let deck = Deck::new(&snapshot, &self.package);
         let read = || -> Result<(Vec<SlideSnapshot>, Vec<StoryText>), EditFailure> {
             let slides: Vec<&SlideSnapshot> = match &request.slide_ids {

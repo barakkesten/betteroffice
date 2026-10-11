@@ -50,6 +50,14 @@ struct StoryArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct StoryFormattingArgs {
+    slide_id: String,
+    shape_id: String,
+    story_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AnchorCaretArgs {
     story_id: String,
     index: u32,
@@ -477,6 +485,21 @@ impl PptxDocument {
         outcome_json(&self.session.read_content(&request).map_err(js_error)?).map_err(js_error)
     }
 
+    #[wasm_bindgen(js_name = readCommandContentJson)]
+    pub fn read_command_content_json(&self, request: &str) -> Result<String, JsValue> {
+        if request.len() > MAX_REQUEST_BYTES {
+            return self.oversized();
+        }
+        let request: ReadRequest = parse_args(request)?;
+        outcome_json(
+            &self
+                .session
+                .read_command_content(&request)
+                .map_err(js_error)?,
+        )
+        .map_err(js_error)
+    }
+
     /// `{"text","within"?,"limit"?}` -> `{"ok":true,"version","matches","truncated"}`.
     #[wasm_bindgen(js_name = findTextJson)]
     pub fn find_text_json(&self, request: &str) -> Result<String, JsValue> {
@@ -546,6 +569,16 @@ impl PptxDocument {
     pub fn story_json(&self, args: &str) -> Result<String, JsValue> {
         let args: StoryArgs = parse_args(args)?;
         json(self.session.story(&args.story_id).map_err(js_error)?)
+    }
+
+    #[wasm_bindgen(js_name = storyFormattingJson)]
+    pub fn story_formatting_json(&self, args: &str) -> Result<String, JsValue> {
+        let args: StoryFormattingArgs = parse_args(args)?;
+        json(
+            self.session
+                .story_formatting(&args.slide_id, &args.shape_id, &args.story_id)
+                .map_err(js_error)?,
+        )
     }
 
     /// Anchors a caret offset so that later edits, undo and remote updates move it.
@@ -1042,6 +1075,16 @@ impl PptxDocument {
             applied: self.session.undo(),
             snapshot: self.session.snapshot().map_err(js_error)?,
         })
+    }
+
+    #[wasm_bindgen(js_name = undoReceiptJson)]
+    pub fn undo_receipt_json(&self) -> Result<String, JsValue> {
+        json(self.session.history_step(false).map_err(js_error)?)
+    }
+
+    #[wasm_bindgen(js_name = redoReceiptJson)]
+    pub fn redo_receipt_json(&self) -> Result<String, JsValue> {
+        json(self.session.history_step(true).map_err(js_error)?)
     }
 
     /// `undoJson` timed at its undo, snapshot and serialize boundaries, as

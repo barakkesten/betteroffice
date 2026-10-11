@@ -1,13 +1,249 @@
 //! Font-independent paragraph semantics shared by rendering and export: the layout and master a
 //! slide inherits from, the paragraph-property cascade, and list markers.
 
-use ooxml_drawingml::ColorValue;
+use ooxml_drawingml::{
+    ColorValue, TableCellPosition, TableStyleFlags, Theme, resolve_color_value_to_hex_with_theme,
+    resolve_theme_font_ref,
+};
 use pptx_parse::{
-    Bullet, ParagraphProperties, Placeholder, PptxPackage, RunProperties, ShapeNode, Slide,
-    SlideLayout, SlideMaster, TextBody,
+    Bullet, GraphicFrameData, ParagraphProperties, Placeholder, PptxPackage, RunProperties,
+    ShapeNode, Slide, SlideLayout, SlideMaster, TextBody, builtin_table_style,
+};
+use yrs::Transact;
+
+use crate::deck::{map_string, required_map, shape_base, shape_parts, slide_ref};
+use crate::{
+    DeckSession, EditError, EditResult, SHAPES, StorySnapshot, TextRunSnapshot, TextStyle,
 };
 
-use crate::deck::shape_base;
+impl DeckSession {
+    pub fn story_formatting(
+        &self,
+        slide_id: &str,
+        shape_id: &str,
+        story_id: &str,
+    ) -> EditResult<StorySnapshot> {
+        let txn = self.doc.transact();
+        let slide = slide_ref(&txn, slide_id)?;
+        let source_path = map_string(&slide, &txn, "sourcePartPath");
+        let layout_path = map_string(&slide, &txn, "layoutPartPath");
+        let package = self.package();
+        let theme =
+            pptx_parse::slide_theme(package, source_path.as_deref(), layout_path.as_deref());
+        let parents =
+            SlideParents::resolve(package, source_path.as_deref(), layout_path.as_deref());
+        let shape = shape_parts(&required_map(&txn, SHAPES)?, &txn, shape_id, Some(&theme))?;
+        if !shape.story_ids.iter().any(|id| id == story_id) {
+            return Err(EditError::StoryNotFound(story_id.to_owned()));
+        }
+        let node = parents
+            .slide
+            .and_then(|slide| find_source_node(&slide.shapes, shape.snapshot.source_id));
+        let placeholder = shape.snapshot.placeholder.as_ref();
+        let mut cascade = ParagraphCascade {
+            primary: node.and_then(node_text),
+            layout: parents
+                .layout
+                .and_then(|layout| placeholder_text(&layout.shapes, placeholder)),
+            master: parents
+                .master
+                .and_then(|master| placeholder_text(&master.shapes, placeholder)),
+            master_slide: parents.master,
+            default_style: &package.presentation.default_text_style,
+            default_paragraph: package.presentation.default_text_paragraph.as_deref(),
+            placeholder,
+            style_color: match node {
+                Some(ShapeNode::Shape(shape)) => shape
+                    .style
+                    .as_ref()
+                    .and_then(|style| style.font_color.as_ref()),
+                _ => None,
+            },
+        };
+        let cell = cell_formatting(package, node, shape_id, story_id);
+        if let Some((text, inherited)) = &cell {
+            cascade = ParagraphCascade {
+                primary: Some(text),
+                master: Some(inherited),
+                ..ParagraphCascade::default()
+            };
+        }
+        let mut story = self.story(story_id)?;
+        for (index, paragraph) in story.paragraphs.iter_mut().enumerate() {
+            let mut properties = cascade.properties(index, paragraph.level, None);
+            paragraph.alignment = paragraph.alignment.clone().or(properties.alignment);
+            if paragraph.runs.is_empty() {
+                let end = [cascade.primary, cascade.layout, cascade.master]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|body| body.paragraphs.get(index)?.end_properties.as_ref());
+                if let Some(end) = end {
+                    merge_run_properties(
+                        properties
+                            .default_run
+                            .get_or_insert_with(RunProperties::default),
+                        end,
+                    );
+                }
+                paragraph.runs.push(TextRunSnapshot {
+                    text: String::new(),
+                    style: TextStyle::default(),
+                });
+            }
+            for run in &mut paragraph.runs {
+                run.style =
+                    inherited_text_style(&run.style, properties.default_run.as_ref(), &theme);
+            }
+        }
+        Ok(story)
+    }
+}
+
+fn inherited_text_style(
+    direct: &TextStyle,
+    fallback: Option<&RunProperties>,
+    theme: &Theme,
+) -> TextStyle {
+    let fallback = fallback.cloned().unwrap_or_default();
+    let family = direct
+        .font_family
+        .as_deref()
+        .or(fallback.font_family.as_deref())
+        .unwrap_or("+mn-lt");
+    TextStyle {
+        bold: Some(direct.bold.or(fallback.bold).unwrap_or(false)),
+        italic: Some(direct.italic.or(fallback.italic).unwrap_or(false)),
+        font_size_pt: Some(
+            direct
+                .font_size_pt
+                .or(fallback.font_size_pt)
+                .unwrap_or(18.0),
+        ),
+        kern_pt: direct.kern_pt.or(fallback.kern_pt),
+        font_family: Some(if family.starts_with('+') {
+            resolve_theme_font_ref(Some(theme), family)
+        } else {
+            family.to_owned()
+        }),
+        color: direct
+            .color
+            .clone()
+            .or_else(|| resolve_color_value_to_hex_with_theme(fallback.color.as_ref(), Some(theme)))
+            .or_else(|| Some("#000000".to_owned())),
+        underline: Some(
+            direct
+                .underline
+                .clone()
+                .or(fallback.underline)
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
+        spacing_pt: direct.spacing_pt.or(fallback.spacing_pt),
+        baseline_pct: direct.baseline_pct.or(fallback.baseline_pct),
+        caps: direct.caps.or(fallback.caps),
+    }
+}
+
+fn find_source_node(nodes: &[ShapeNode], id: u32) -> Option<&ShapeNode> {
+    for node in nodes {
+        if node.id() == id {
+            return Some(node);
+        }
+        if let ShapeNode::Group(group) = node
+            && let Some(found) = find_source_node(&group.children, id)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn node_text(node: &ShapeNode) -> Option<&TextBody> {
+    match node {
+        ShapeNode::Shape(shape) => shape.text.as_ref(),
+        _ => None,
+    }
+}
+
+fn placeholder_text<'a>(
+    nodes: &'a [ShapeNode],
+    placeholder: Option<&Placeholder>,
+) -> Option<&'a TextBody> {
+    placeholder
+        .and_then(|target| find_placeholder(nodes, target))
+        .and_then(node_text)
+}
+
+fn cell_formatting<'a>(
+    package: &'a PptxPackage,
+    node: Option<&'a ShapeNode>,
+    shape_id: &str,
+    story_id: &str,
+) -> Option<(&'a TextBody, TextBody)> {
+    let ShapeNode::GraphicFrame(frame) = node? else {
+        return None;
+    };
+    let GraphicFrameData::Table(table) = &frame.data else {
+        return None;
+    };
+    let suffix = story_id
+        .strip_prefix("story:")?
+        .strip_prefix(shape_id)?
+        .strip_prefix(":table:")?;
+    let (row, column) = suffix.split_once(':')?;
+    let row = row.parse::<usize>().ok()?;
+    let column = column.parse::<usize>().ok()?;
+    let cell = table.rows.get(row)?.cells.get(column)?;
+    let style = table
+        .properties
+        .style_id
+        .as_deref()
+        .and_then(|id| {
+            package
+                .table_styles
+                .style(Some(id))
+                .or_else(|| builtin_table_style(id))
+        })
+        .map(|style| {
+            style.resolve_cell(
+                TableStyleFlags {
+                    first_row: table.properties.first_row,
+                    last_row: table.properties.last_row,
+                    first_column: table.properties.first_col,
+                    last_column: table.properties.last_col,
+                    band_row: table.properties.band_row,
+                },
+                TableCellPosition {
+                    row,
+                    column,
+                    row_count: table.rows.len(),
+                    column_count: table.grid.len().max(
+                        table
+                            .rows
+                            .iter()
+                            .map(|row| row.cells.len())
+                            .max()
+                            .unwrap_or_default(),
+                    ),
+                },
+            )
+        })
+        .unwrap_or_default();
+    Some((
+        &cell.text,
+        TextBody {
+            default_list_style: Some(Box::new(ParagraphProperties {
+                default_run: Some(RunProperties {
+                    bold: style.bold,
+                    italic: style.italic,
+                    color: style.color,
+                    ..RunProperties::default()
+                }),
+                ..ParagraphProperties::default()
+            })),
+            ..TextBody::default()
+        },
+    ))
+}
 
 /// The largest number a list marker shows: the largest `startAt` plus one per paragraph a story
 /// renders.

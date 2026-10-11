@@ -2032,6 +2032,35 @@ pub(crate) fn snapshot_doc(doc: &Doc, package: &PptxPackage) -> EditResult<DeckS
     })
 }
 
+#[cfg(any(feature = "wasm", test))]
+pub(crate) fn snapshot_selected_slides(
+    doc: &Doc,
+    package: &PptxPackage,
+    ids: &[String],
+) -> EditResult<DeckSnapshot> {
+    let txn = doc.transact();
+    let meta = required_map(&txn, META)?;
+    let slides = required_map(&txn, SLIDES)?;
+    let shapes = required_map(&txn, SHAPES)?;
+    let stories = required_map(&txn, STORIES)?;
+    let mut seen = HashSet::new();
+    let mut selected = Vec::new();
+    for id in ids {
+        if seen.insert(id) {
+            selected.push(snapshot_slide(
+                &slides, &shapes, &stories, package, &txn, id,
+            )?);
+        }
+    }
+    Ok(DeckSnapshot {
+        width_emu: required_i64(&meta, &txn, "widthEmu")?,
+        height_emu: required_i64(&meta, &txn, "heightEmu")?,
+        slides: selected,
+        comment_flavor: snapshot_flavor(&txn)?,
+        comments: Vec::new(),
+    })
+}
+
 pub(crate) fn slide_notes<T: ReadTxn>(slide: &MapRef, txn: &T, package: &PptxPackage) -> String {
     if let Some(notes) = map_string(slide, txn, "notes") {
         return notes;
