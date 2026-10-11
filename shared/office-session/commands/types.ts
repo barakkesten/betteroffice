@@ -130,7 +130,7 @@ export type EchoHooks<X, F> = {
     frame: FrameEnvelope<F>,
     retired: readonly EchoEntry<X>[],
     remaining: readonly EchoEntry<X>[]
-  ): void;
+  ): void | boolean;
 };
 
 /** @internal Painter timing within one synchronous submit, acknowledgement, or frame event. */
@@ -213,7 +213,8 @@ export type CommandHostOptions<P, S, E, F> = {
   frame(input: { coversThroughSeq: number; version: number }):
     | FrameEnvelope<F>
     | TransferResult<FrameEnvelope<F>>
-    | Promise<FrameEnvelope<F> | TransferResult<FrameEnvelope<F>>>;
+    | undefined
+    | Promise<FrameEnvelope<F> | TransferResult<FrameEnvelope<F>> | undefined>;
   snapshot(): Uint8Array | Promise<Uint8Array>;
 };
 
@@ -267,6 +268,10 @@ export type FrameDisposition = 'presented' | 'stale' | 'base-mismatch';
 export type PresenterOptions<X, F> = {
   echo?: EchoHooks<X, F>;
   sameCoverageFrames?: boolean;
+  /** @internal Commits presentation only after the echo hook accepts it; off by default. */
+  transactionalPresentation?: boolean;
+  /** @internal Handles echo capacity overflow; defaults to declining new entries. */
+  echoOverflow?: 'decline' | 'evict-oldest';
   maxEchoEntries?: number;
   now?(): number;
   requestFullFrame(): void;
@@ -323,6 +328,10 @@ export type WorkerEditSessionOptions<O, P, S, E, F, X> = {
   recovery: RecoveryHooks<O, P, S, E, F>;
   echo?: EchoHooks<X, F>;
   sameCoverageFrames?: boolean;
+  /** @internal Commits presentation only after the echo hook accepts it; off by default. */
+  transactionalPresentation?: boolean;
+  /** @internal Handles echo capacity overflow; defaults to declining new entries. */
+  echoOverflow?: 'decline' | 'evict-oldest';
   coalesce?(prev: CommandDraft<P, X>, next: CommandDraft<P, X>): CommandDraft<P, X> | undefined;
   requestFullFrame(connection: CommandConnection<P, S, E, F>): Promise<CommandAck<S, E, F>>;
   maxInFlight?: number;

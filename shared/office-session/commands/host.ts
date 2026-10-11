@@ -190,9 +190,10 @@ export function createCommandHost<P, S, E, F>(
     for (const boundary of frameBarriers.keys()) releaseFrames(boundary);
   }
 
-  async function buildFrame(): Promise<FrameEnvelope<F> | TransferResult<FrameEnvelope<F>>> {
+  async function buildFrame(): Promise<FrameEnvelope<F> | TransferResult<FrameEnvelope<F>> | undefined> {
     try {
       const rendered = await frame({ coversThroughSeq: throughSeq, version });
+      if (rendered === undefined) return undefined;
       const candidate = isTransferResult(rendered) ? (rendered as TransferResult<FrameEnvelope<F>>).value : rendered;
       if (!isCommandAck({ session, incarnation, epoch, throughSeq, version, outcomes: [], frame: candidate }) ||
         candidate.coversThroughSeq !== throughSeq) {
@@ -203,6 +204,12 @@ export function createCommandHost<P, S, E, F>(
       poison = terminalFailure(error);
       throw poison;
     }
+  }
+
+  async function requiredFrame(): Promise<FrameEnvelope<F> | TransferResult<FrameEnvelope<F>>> {
+    const rendered = await buildFrame();
+    if (rendered === undefined) throw new Error('No frame is available at the settled command boundary');
+    return rendered;
   }
 
   function settle(outcome: CommandOutcome): CommandOutcome {
@@ -251,6 +258,7 @@ export function createCommandHost<P, S, E, F>(
     if (admitted > 0 || queuedEdits > 1) return reply;
     try {
       const rendered = await buildFrame();
+      if (rendered === undefined) return reply;
       if (isTransferResult(rendered)) {
         reply.frame = rendered.value;
         if (!isCommandAck(reply) || reply.frame.coversThroughSeq !== throughSeq) {
@@ -374,7 +382,7 @@ export function createCommandHost<P, S, E, F>(
         releasePoisonedFrames();
         return Promise.reject(poison);
       }
-      if (admitted === 0) return serialize(buildFrame);
+      if (admitted === 0) return serialize(requiredFrame);
       pendingFrames += 1;
       return new Promise<FrameEnvelope<F> | TransferResult<FrameEnvelope<F>>>((resolve, reject) => {
         const boundary = enteredAdmissions + admitted;
@@ -382,7 +390,7 @@ export function createCommandHost<P, S, E, F>(
         if (!waiting) frameBarriers.set(boundary, waiting = []);
         waiting.push(() => {
           pendingFrames -= 1;
-          void serialize(buildFrame).then(resolve, reject);
+          void serialize(requiredFrame).then(resolve, reject);
         });
       });
     },

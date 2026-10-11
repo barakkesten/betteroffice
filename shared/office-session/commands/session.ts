@@ -34,6 +34,7 @@ type LogEntry<P> = {
   outcome?: CommandOutcome;
   confirmedVersion?: number;
   presentationStatus?: PresentationStatus;
+  rpcSettled: boolean;
   bytes: number;
 };
 
@@ -82,11 +83,11 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
   options: WorkerEditSessionOptions<O, P, S, E, F, X>
 ): EditSession<P, S, E, X> {
   const initial = options.connection.initial;
-  const source = cloneData(options.source);
+  const maxAttempts = options.maxRecoveryAttempts === 0 ? 0 : limit(options.maxRecoveryAttempts, 2);
+  const source = maxAttempts === 0 ? undefined : cloneData(options.source);
   const sessionId = initial.session;
   const epoch = initial.epoch;
   const maxInFlight = limit(options.maxInFlight, 4);
-  const maxAttempts = limit(options.maxRecoveryAttempts, 2);
   const enqueue = options.enqueue ?? queueMicrotask;
   const records = new WeakMap<CommandTicket, TicketRecord>();
   const pending = new Set<TicketRecord>();
@@ -144,12 +145,15 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       drop: (entries, reason) => options.echo!.drop(entries, reason),
       present(frame, retired, remaining) {
         framePainted = false;
-        options.echo!.present(frame, retired, remaining);
-        framePainted = true;
+        const result = options.echo!.present(frame, retired, remaining);
+        framePainted = !options.transactionalPresentation || result !== false;
+        return result;
       },
     },
     maxEchoEntries: options.maxEchoEntries, now: options.now,
     sameCoverageFrames: options.sameCoverageFrames,
+    transactionalPresentation: options.transactionalPresentation,
+    echoOverflow: options.echoOverflow,
     onEchoOverrun: options.onEchoOverrun,
     requestFullFrame: () => requestFullFrame(frameCoverage, frameRevision),
   });
@@ -221,10 +225,17 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     presenter.drop(tickets, reason);
   }
 
-  function cancelQueued(tickets: readonly CommandTicket[]): void {
-    const removed = cancelOutboxAfter(outbox, tickets);
-    cancelTickets(removed.map((entry) => entry.tickets[0]!), 'dependency-refused');
-    if (removed.length === 64) enqueueCancellation(() => cancelQueued([]));
+  function cancelQueued(tickets: readonly CommandTicket[], synchronous = false): void {
+    let removed = cancelOutboxAfter(outbox, tickets);
+    while (true) {
+      cancelTickets(removed.map((entry) => entry.tickets[0]!), 'dependency-refused');
+      if (removed.length < 64) return;
+      if (!synchronous) {
+        enqueueCancellation(() => cancelQueued([]));
+        return;
+      }
+      removed = cancelOutboxAfter(outbox, []);
+    }
   }
 
   function enqueueCancellation(callback: () => void): void {
@@ -296,10 +307,10 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     drainCancellations();
   }
 
-  function drainCancellations(): void {
+  function drainCancellations(synchronous = false): void {
     cancellationQueued = true;
     if (disposed || terminal) return;
-    let remaining = 64;
+    let remaining = synchronous ? Infinity : 64;
     while (cancellations.size && remaining > 0) {
       remaining -= 1;
       const iterator = cancellations.values().next().value!;
@@ -322,7 +333,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       settleAck(entry.group, entry.outcome);
       settlePresentation(entry.group, 'dropped');
       presenter.drop([entry.ticket], 'dependency-refused');
-      cancelQueued([entry.ticket]);
+      cancelQueued([entry.ticket], synchronous);
     }
     if (cancellations.size) {
       cancellationDone ??= deferred<void>();
@@ -334,18 +345,19 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     }
   }
 
-  function acceptAck(record: ConnectionRecord<P, S, E, F>, ack: CommandAck<S, E, F>, replay = false): void {
-    if (!live(record)) return;
+  function acceptAck(record: ConnectionRecord<P, S, E, F>, ack: CommandAck<S, E, F>, replay = false): boolean {
+    if (!live(record)) return false;
     if (!isCommandAck(ack)) {
       fail(new SessionFailure('message', 'Malformed command acknowledgement'));
-      return;
+      return false;
     }
-    if (ack.session !== sessionId || ack.incarnation !== incarnation || ack.epoch !== epoch) return;
+    if (ack.session !== sessionId || ack.incarnation !== incarnation || ack.epoch !== epoch) return false;
     if (ack.throughSeq > highSeq || (ack.frame && ack.frame.coversThroughSeq > highSeq) ||
       ack.outcomes.some((outcome) => outcome.seq > ack.throughSeq)) {
       fail(new SessionFailure('message', 'Command acknowledgement exceeds sent coverage'));
-      return;
+      return false;
     }
+    let frameRejected = false;
     try {
       presenter.event(() => {
         for (const outcome of ack.outcomes) {
@@ -366,25 +378,29 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
           state = { ...state, editState: ack.editState };
           editStateThroughSeq = ack.throughSeq;
         }
-        if (ack.frame) presentFrame(ack.frame);
+        if (ack.frame) frameRejected = presentFrame(ack.frame);
+        if (maxAttempts === 0 && cancellations.size === 0) pruneLog(state.throughSeq, true);
         publish();
       });
     } catch (error) {
       terminate(error instanceof SessionFailure ? error : new SessionFailure('message',
         error instanceof Error ? error.message : String(error)));
-      return;
+      return false;
     }
     wake();
+    return frameRejected;
   }
 
-  function presentFrame(frame: FrameEnvelope<F>): void {
+  function presentFrame(frame: FrameEnvelope<F>): boolean {
     const previousCoverage = presenter.presentedThroughSeq;
     const previousPainted = framePainted;
     framePainted = true;
     frameCoverage = frame.coversThroughSeq;
     frameRevision = frame.revision;
     try {
-      if (presenter.present(frame) !== 'presented' || presenter.presentedThroughSeq <= previousCoverage) return;
+      const disposition = presenter.present(frame);
+      const rejected = !!options.transactionalPresentation && !framePainted;
+      if (disposition !== 'presented' || presenter.presentedThroughSeq <= previousCoverage) return rejected;
       const status = framePainted ? 'presented' : 'dropped';
       const throughSeq = Math.min(presenter.presentedThroughSeq, frame.coversThroughSeq);
       for (const [seq, entry] of uncoveredPresentations) {
@@ -394,6 +410,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
         if (!entry.outcome || blocked(entry.outcome)) continue;
         settlePresentation(entry.group, status);
       }
+      return rejected;
     } finally {
       framePainted = previousPainted;
     }
@@ -485,7 +502,15 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       if (connection) void close(connection, failure);
       return;
     }
-    if (!recoverable(failure)) {
+    if (maxAttempts === 0 || !recoverable(failure)) {
+      if (maxAttempts === 0 && recoverable(failure)) {
+        try {
+          presenter.event(() => { cancelQueued([], true); drainCancellations(true); });
+        } catch (error) {
+          terminate(failureFor(error));
+          return;
+        }
+      }
       terminate(failure);
       return;
     }
@@ -543,7 +568,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
         if (disposed || terminal) return;
         const retainedCheckpoint = checkpoint && { ...checkpoint, state: checkpoint.state.slice() };
         const next = await options.recovery.reopen({
-          source: cloneData(source), checkpoint: retainedCheckpoint,
+          source: cloneData(source!), checkpoint: retainedCheckpoint,
           session: sessionId, incarnation, epoch,
           refusedSeqs: blockedSeqs.values(),
           replayAppliedSeqs: [...log.values()].filter((entry) => entry.outcome?.status === 'applied').map((entry) => entry.envelope.seq),
@@ -624,20 +649,38 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     fetchFullFrame(record);
   }
 
+  function fullFrameSatisfied(record: ConnectionRecord<P, S, E, F>): boolean {
+    return presenter.presentedThroughSeq > record.fullFrameThroughSeq ||
+      (presenter.presentedThroughSeq === record.fullFrameThroughSeq &&
+        (!options.sameCoverageFrames ||
+          (presenter.revision !== undefined && presenter.revision >= record.fullFrameRevision!)));
+  }
+
   function fetchFullFrame(record: ConnectionRecord<P, S, E, F>): void {
     if (!live(record) || record.fullFrameBusy) return;
     record.fullFrameBusy = true;
+    const requestedThroughSeq = record.fullFrameThroughSeq;
+    const requestedRevision = record.fullFrameRevision!;
     try {
       void options.requestFullFrame(record.connection).then((ack) => {
         if (!live(record)) return;
         const previousCoverage = presenter.presentedThroughSeq;
-        acceptAck(record, ack);
+        const frameRejected = acceptAck(record, ack);
         record.fullFrameBusy = false;
         if (!live(record)) return;
-        if (presenter.presentedThroughSeq > record.fullFrameThroughSeq ||
-          (presenter.presentedThroughSeq === record.fullFrameThroughSeq &&
-            (!options.sameCoverageFrames ||
-              (presenter.revision !== undefined && presenter.revision >= record.fullFrameRevision!)))) {
+        if (frameRejected) {
+          record.fullFrameRetries = 0;
+          if ((record.fullFrameThroughSeq > requestedThroughSeq ||
+            (record.fullFrameThroughSeq === requestedThroughSeq && record.fullFrameRevision! > requestedRevision)) &&
+            !fullFrameSatisfied(record)) {
+            fetchFullFrame(record);
+            return;
+          }
+          record.fullFrameThroughSeq = -1;
+          record.fullFrameRevision = undefined;
+          return;
+        }
+        if (fullFrameSatisfied(record)) {
           record.fullFrameRetries = 0;
           record.fullFrameThroughSeq = -1;
           record.fullFrameRevision = undefined;
@@ -669,7 +712,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
   }
 
   function checkpointDue(): boolean {
-    if (!options.recovery.checkpoint || state.throughSeq === checkpointAttemptedAt) return false;
+    if (maxAttempts === 0 || !options.recovery.checkpoint || state.throughSeq === checkpointAttemptedAt) return false;
     const applied = appliedCount;
     const bytes = retainedBytes;
     if (applied === 0 && bytes === 0) return false;
@@ -710,18 +753,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       if (!live(record)) return;
       if (validCheckpoint(value)) {
         checkpoint = { ...value, state: value.state.slice() };
-        for (const [seq, entry] of log) {
-          if (seq > value.throughSeq) break;
-          if (entry.outcome?.status === 'applied') appliedCount -= 1;
-          retainedBytes -= entry.bytes;
-          const afterSeq = entry.envelope.afterSeq;
-          if (afterSeq !== undefined) {
-            const children = dependencies.get(afterSeq);
-            children?.delete(seq);
-            if (children?.size === 0) dependencies.delete(afterSeq);
-          }
-          log.delete(seq);
-        }
+        pruneLog(value.throughSeq);
       }
       checkpointBusy = false;
       wake();
@@ -735,6 +767,27 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       checkpointBusy = false;
       fail(failureFor(error));
     });
+  }
+
+  function pruneLog(throughSeq: number, knownPrefix = false): void {
+    for (const [seq, entry] of log) {
+      if (seq > throughSeq) break;
+      if (knownPrefix && (!entry.outcome || !entry.rpcSettled)) break;
+      if (entry.outcome?.status === 'applied') appliedCount -= 1;
+      retainedBytes -= entry.bytes;
+      const afterSeq = entry.envelope.afterSeq;
+      if (afterSeq !== undefined) {
+        const children = dependencies.get(afterSeq);
+        children?.delete(seq);
+        if (children?.size === 0) dependencies.delete(afterSeq);
+      }
+      log.delete(seq);
+    }
+  }
+
+  function settleRpc(entry: LogEntry<P>): void {
+    entry.rpcSettled = true;
+    if (maxAttempts === 0 && cancellations.size === 0) pruneLog(state.throughSeq, true);
   }
 
   function eligible(entry: OutboxEntry<P, X>): boolean {
@@ -762,7 +815,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     };
     const group = records.get(entry.tickets[0]!)!;
     const logged: LogEntry<P> = {
-      envelope, ticket: entry.tickets[0]!, group, bytes: 0,
+      envelope, ticket: entry.tickets[0]!, group, rpcSettled: false, bytes: 0,
     };
     log.set(seq, logged);
     presentations.set(seq, logged);
@@ -788,13 +841,18 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       logged.bytes = Number.isFinite(bytes) && bytes >= 0 ? bytes : 0;
       retainedBytes += logged.bytes;
       void record.connection.client.call.edit(cloneData(logged.envelope)).then((ack) => {
-        if (live(record)) acceptAck(record, ack);
+        try {
+          if (live(record)) acceptAck(record, ack);
+        } finally { settleRpc(logged); }
       }, (error) => {
-        if (!live(record)) return;
-        fail(error instanceof SessionFailure ? error : unknown(logged, error, false));
+        try {
+          if (live(record)) fail(error instanceof SessionFailure ? error : unknown(logged, error, false));
+        } finally { settleRpc(logged); }
       }).catch((error) => { if (live(record)) fail(failureFor(error)); });
     } catch (error) {
-      if (live(record)) fail(error instanceof SessionFailure ? error : unknown(logged, error, false));
+      try {
+        if (live(record)) fail(error instanceof SessionFailure ? error : unknown(logged, error, false));
+      } finally { settleRpc(logged); }
     }
   }
 

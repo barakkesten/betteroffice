@@ -38,6 +38,322 @@ function painters() {
   return { echo, paints, drops, presents };
 }
 
+for (const rejection of ['returns false', 'throws'] as const) {
+  test(`keeps transactional coverage, revision, echo, and waiters unchanged when the hook ${rejection}`, async () => {
+    const hooks = painters();
+    let reject = false;
+    let requests = 0;
+    const observed: Array<{ coverage: number; revision: number | undefined; pending: readonly EchoEntry<string>[] }> = [];
+    let presenter!: Presenter<string, string>;
+    presenter = createPresenter<string, string>({
+      transactionalPresentation: true, now: () => 0,
+      requestFullFrame() { requests += 1; },
+      echo: { ...hooks.echo, present(candidate, retired, remaining) {
+        hooks.echo.present(candidate, retired, remaining);
+        observed.push({ coverage: presenter.presentedThroughSeq, revision: presenter.revision, pending: presenter.pending });
+        if (!reject) return;
+        if (rejection === 'throws') throw new Error('install failed');
+        return false;
+      } },
+    });
+    presenter.present(frame(0, 10));
+    const first = { ticket: ticket(1, 1).value, value: 'first' };
+    const later = { ticket: ticket(2, 2).value, value: 'later' };
+    presenter.add(first);
+    presenter.add(later);
+    let status: PresentationStatus | undefined;
+    const waiting = presenter.whenPresented(1);
+    void waiting.then((value) => { status = value; });
+    reject = true;
+    expect(presenter.present(frame(1, 11, 10))).toBe('stale');
+    expect(observed[1]).toEqual({ coverage: 0, revision: 10, pending: [first, later] });
+    expect(hooks.presents[1]).toEqual({ frame: frame(1, 11, 10), retired: [first], remaining: [later] });
+    expect(presenter.presentedThroughSeq).toBe(0);
+    expect(presenter.revision).toBe(10);
+    expect(presenter.pending).toEqual([first, later]);
+    expect(presenter.whenPresented(1)).toBe(waiting);
+    await Promise.resolve();
+    expect(status).toBeUndefined();
+    expect(hooks.drops).toEqual([]);
+    expect(hooks.paints).toEqual([[first], [first, later]]);
+    expect(requests).toBe(0);
+    reject = false;
+    expect(presenter.present(frame(1, 12, 10))).toBe('presented');
+    expect(await waiting).toBe('presented');
+    expect(await presenter.whenPresented(1)).toBe('presented');
+    expect(presenter.pending).toEqual([later]);
+    expect(presenter.revision).toBe(12);
+  });
+}
+
+test('preserves reset during a transactional hook or nested install and accepts new coverage', async () => {
+  for (const nested of [false, true]) {
+    const dispositions: string[] = [];
+    const resetStates: Array<{ coverage: number; revision: number | undefined }> = [];
+    let presenter!: Presenter<string, string>;
+    presenter = createPresenter<string, string>({
+      transactionalPresentation: true, now: () => 0, requestFullFrame() {},
+      echo: {
+        paint() {}, drop() {},
+        present(candidate) {
+          if (candidate.revision === 12) presenter.reset();
+          if (candidate.revision !== 11) return;
+          if (nested) dispositions.push(presenter.present(frame(2, 12)));
+          else presenter.reset();
+          resetStates.push({ coverage: presenter.presentedThroughSeq, revision: presenter.revision });
+          if (nested) dispositions.push(presenter.present(frame(0, 0)));
+        },
+      },
+    });
+    expect(presenter.present(frame(0, 10))).toBe('presented');
+    const entry = { ticket: ticket(1, 1).value, value: 'a' };
+    presenter.add(entry);
+    let status: PresentationStatus | undefined;
+    const waiting = presenter.whenPresented(1).then((value) => { status = value; return value; });
+    expect(presenter.present(frame(1, 11, 10))).toBe('stale');
+    await Promise.resolve();
+    expect(dispositions).toEqual(nested ? ['stale', 'presented'] : []);
+    expect(resetStates).toEqual([{ coverage: -1, revision: undefined }]);
+    expect(presenter.presentedThroughSeq).toBe(nested ? 0 : -1);
+    expect(presenter.revision).toBe(nested ? 0 : undefined);
+    expect(presenter.pending).toEqual([entry]);
+    expect(status).toBeUndefined();
+    if (!nested) expect(presenter.present(frame(0, 0))).toBe('presented');
+    expect(presenter.present(frame(1, 1, 0))).toBe('presented');
+    expect(await waiting).toBe('presented');
+    expect(presenter.pending).toEqual([]);
+  }
+});
+
+test('preserves a superseding transactional install through failures in two outer hooks', async () => {
+  const nested: Array<{ coverage: number; disposition: string }> = [];
+  let presenter!: Presenter<string, string>;
+  presenter = createPresenter<string, string>({
+    transactionalPresentation: true, now: () => 0, requestFullFrame() {},
+    echo: {
+      paint() {}, drop() {},
+      present(candidate) {
+        if (candidate.coversThroughSeq === 1) {
+          nested.push({ coverage: 2, disposition: presenter.present(frame(2, 12)) });
+          throw new Error('outer install failed');
+        }
+        if (candidate.coversThroughSeq === 2) {
+          nested.push({ coverage: 3, disposition: presenter.present(frame(3, 13)) });
+          return false;
+        }
+      },
+    },
+  });
+  presenter.present(frame(0, 10));
+  const entries = [1, 2, 3, 4].map((seq) => ({ ticket: ticket(seq, seq).value, value: String(seq) }));
+  entries.forEach((entry) => presenter.add(entry));
+  const waiting = [1, 2, 3].map((seq) => presenter.whenPresented(seq));
+  expect(presenter.present(frame(1, 11, 10))).toBe('stale');
+  expect(nested).toEqual([{ coverage: 3, disposition: 'presented' }, { coverage: 2, disposition: 'stale' }]);
+  expect(presenter.presentedThroughSeq).toBe(3);
+  expect(presenter.revision).toBe(13);
+  expect(presenter.pending).toEqual([entries[3]]);
+  expect(await Promise.all(waiting)).toEqual(['presented', 'presented', 'presented']);
+  expect(await presenter.whenPresented(1)).toBe('presented');
+});
+
+test('rejects nested transactional frames that do not supersede the in-progress install', () => {
+  const installed: number[] = [];
+  const nested: string[] = [];
+  let presenter!: Presenter<string, string>;
+  presenter = createPresenter<string, string>({
+    transactionalPresentation: true, sameCoverageFrames: true, now: () => 0, requestFullFrame() {},
+    echo: {
+      paint() {}, drop() {},
+      present(candidate) {
+        installed.push(candidate.revision);
+        if (candidate.revision !== 13) return;
+        nested.push(presenter.present(frame(1, 14)));
+        nested.push(presenter.present(frame(2, 12)));
+        nested.push(presenter.present(frame(2, 13)));
+        return false;
+      },
+    },
+  });
+  presenter.present(frame(0, 10));
+  expect(presenter.present(frame(2, 13))).toBe('stale');
+  expect(nested).toEqual(['stale', 'stale', 'stale']);
+  expect(installed).toEqual([10, 13]);
+  expect(presenter.presentedThroughSeq).toBe(0);
+  expect(presenter.revision).toBe(10);
+});
+
+test('commits a superseding same-coverage transactional revision without lowering it on outer success', () => {
+  let nested: string | undefined;
+  let presenter!: Presenter<string, string>;
+  presenter = createPresenter<string, string>({
+    transactionalPresentation: true, sameCoverageFrames: true, now: () => 0, requestFullFrame() {},
+    echo: {
+      paint() {}, drop() {},
+      present(candidate) {
+        if (candidate.revision === 11) nested = presenter.present(frame(1, 13, 10));
+      },
+    },
+  });
+  presenter.present(frame(1, 10));
+  expect(presenter.present(frame(1, 11, 10))).toBe('presented');
+  expect(nested).toBe('presented');
+  expect(presenter.revision).toBe(13);
+  expect(presenter.presentedThroughSeq).toBe(1);
+  expect(presenter.present(frame(1, 12))).toBe('stale');
+});
+
+test('keeps transactional same-coverage revision unchanged after rejection and accepts a later install', () => {
+  for (const throws of [false, true]) {
+    const hooks = painters();
+    let reject = false;
+    const presenter = createPresenter<string, string>({
+      transactionalPresentation: true, sameCoverageFrames: true, now: () => 0, requestFullFrame() {},
+      echo: { ...hooks.echo, present(candidate, retired, remaining) {
+        hooks.echo.present(candidate, retired, remaining);
+        if (!reject) return;
+        if (throws) throw new Error('redraw failed');
+        return false;
+      } },
+    });
+    presenter.present(frame(0, 10));
+    const entry = { ticket: ticket(1, 1).value, value: 'pending' };
+    presenter.add(entry);
+    reject = true;
+    expect(presenter.present(frame(0, 11, 10))).toBe('stale');
+    expect(presenter.revision).toBe(10);
+    expect(presenter.presentedThroughSeq).toBe(0);
+    expect(presenter.pending).toEqual([entry]);
+    expect(hooks.presents[1]).toEqual({ frame: frame(0, 11, 10), retired: [], remaining: [entry] });
+    reject = false;
+    expect(presenter.present(frame(0, 12, 10))).toBe('presented');
+    expect(presenter.revision).toBe(12);
+    expect(presenter.pending).toEqual([entry]);
+    expect(hooks.drops).toEqual([]);
+  }
+});
+
+test('retires only staged transactional echo and preserves entries added during the hook', () => {
+  const hooks = painters();
+  const first = { ticket: ticket(1, 1).value, value: 'first' };
+  const later = { ticket: ticket(2, 2).value, value: 'later' };
+  const added = { ticket: ticket(3, 1).value, value: 'added' };
+  let coverageInHook: number | undefined;
+  let presenter!: Presenter<string, string>;
+  presenter = createPresenter<string, string>({
+    transactionalPresentation: true, now: () => 0, requestFullFrame() {},
+    echo: { ...hooks.echo, present(candidate, retired, remaining) {
+      hooks.echo.present(candidate, retired, remaining);
+      if (candidate.coversThroughSeq !== 1) return;
+      coverageInHook = presenter.presentedThroughSeq;
+      presenter.add(added);
+    } },
+  });
+  presenter.present(frame(0));
+  presenter.add(first);
+  presenter.add(later);
+  expect(presenter.present(frame(1))).toBe('presented');
+  expect(coverageInHook).toBe(0);
+  expect(hooks.presents[1]).toEqual({ frame: frame(1), retired: [first], remaining: [later] });
+  expect(presenter.pending).toEqual([later, added]);
+});
+
+test('advances coverage and drops retired waiters on a throwing hook by default', async () => {
+  const hooks = painters();
+  const presenter = createPresenter<string, string>({
+    now: () => 0, requestFullFrame() {},
+    echo: { ...hooks.echo, present() { throw new Error('install failed'); } },
+  });
+  presenter.add({ ticket: ticket(1, 1).value, value: 'first' });
+  const waiting = presenter.whenPresented(1);
+  expect(presenter.present(frame(1, 10))).toBe('presented');
+  expect(presenter.presentedThroughSeq).toBe(1);
+  expect(presenter.revision).toBe(10);
+  expect(presenter.pending).toEqual([]);
+  expect(await waiting).toBe('dropped');
+});
+
+test('ignores a false presentation result by default and presents covered waiters', async () => {
+  const hooks = painters();
+  const presenter = createPresenter<string, string>({
+    now: () => 0, requestFullFrame() {},
+    echo: { ...hooks.echo, present: () => false },
+  });
+  presenter.add({ ticket: ticket(1, 1).value, value: 'first' });
+  const waiting = presenter.whenPresented(1);
+  expect(presenter.present(frame(1))).toBe('presented');
+  expect(presenter.presentedThroughSeq).toBe(1);
+  expect(presenter.pending).toEqual([]);
+  expect(await waiting).toBe('presented');
+});
+
+test('evicts the oldest echo at capacity without dropping its coverage waiter', async () => {
+  const hooks = painters();
+  const presenter = createPresenter({
+    echo: hooks.echo, maxEchoEntries: 2, echoOverflow: 'evict-oldest', now: () => 0, requestFullFrame() {},
+  });
+  const entries = [1, 2, 3].map((seq) => ({ ticket: ticket(seq, seq).value, value: String(seq) }));
+  presenter.add(entries[0]!);
+  presenter.add(entries[1]!);
+  let status: PresentationStatus | undefined;
+  const waiting = presenter.whenPresented(1).then((value) => { status = value; return value; });
+  expect(presenter.add(entries[2]!)).toBe(true);
+  expect(presenter.pending).toEqual([entries[1], entries[2]]);
+  expect(hooks.paints).toEqual([[entries[0]], [entries[0], entries[1]], [entries[1], entries[2]]]);
+  expect(hooks.drops).toEqual([]);
+  await Promise.resolve();
+  expect(status).toBeUndefined();
+  presenter.present(frame(3));
+  expect(await waiting).toBe('presented');
+  expect(await presenter.whenPresented(1)).toBe('presented');
+  expect(hooks.presents[0]!.retired).toEqual([entries[1], entries[2]]);
+});
+
+test('keeps the replacement echo at capacity by silently evicting the oldest entry', async () => {
+  const hooks = painters();
+  const presenter = createPresenter({
+    echo: hooks.echo, maxEchoEntries: 2, echoOverflow: 'evict-oldest', now: () => 0, requestFullFrame() {},
+  });
+  const first = { ticket: ticket(1, 1).value, value: 'first' };
+  const later = { ticket: ticket(2, 2).value, value: 'later' };
+  const replacement = { ticket: ticket(3, 3).value, value: 'replacement' };
+  presenter.add(first);
+  presenter.add(later);
+  const waiting = presenter.whenPresented(1);
+  presenter.replace([replacement.ticket], replacement);
+  expect(presenter.pending).toEqual([later, replacement]);
+  expect(hooks.paints).toEqual([[first], [first, later], [later, replacement]]);
+  expect(hooks.drops).toEqual([]);
+  presenter.present(frame(3));
+  expect(await waiting).toBe('presented');
+});
+
+test('declines echo additions and replacements at zero capacity even with eviction enabled', () => {
+  const hooks = painters();
+  const presenter = createPresenter({
+    echo: hooks.echo, maxEchoEntries: 0, echoOverflow: 'evict-oldest', now: () => 0, requestFullFrame() {},
+  });
+  const entry = { ticket: ticket(1, 1).value, value: 'first' };
+  expect(presenter.add(entry)).toBe(false);
+  presenter.replace([entry.ticket], entry);
+  expect(presenter.pending).toEqual([]);
+  expect(hooks.paints).toEqual([]);
+  expect(hooks.drops).toEqual([]);
+});
+
+test('declines echo overflow by default and retains the existing pending entries', () => {
+  const hooks = painters();
+  const presenter = createPresenter({ echo: hooks.echo, maxEchoEntries: 1, now: () => 0, requestFullFrame() {} });
+  const first = { ticket: ticket(1, 1).value, value: 'first' };
+  const later = { ticket: ticket(2, 2).value, value: 'later' };
+  expect(presenter.add(first)).toBe(true);
+  expect(presenter.add(later)).toBe(false);
+  presenter.replace([later.ticket], later);
+  expect(presenter.pending).toEqual([first]);
+  expect(hooks.paints).toEqual([[first]]);
+  expect(hooks.drops).toEqual([]);
+});
+
 test('installs newer same-coverage frames only when opted in without retiring echo or settling waiters', async () => {
   for (const sameCoverageFrames of [undefined, false, true]) {
     const hooks = painters();

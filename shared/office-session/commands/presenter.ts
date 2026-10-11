@@ -23,6 +23,8 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
   let settledCoverage = -1;
   let paintedCoverage = -1;
   let revision: number | undefined;
+  let installing: { coverage: number; revision: number } | undefined;
+  let resetGeneration = 0;
   let disposed = false;
   let eventDepth = 0;
   let eventTotalMs = 0;
@@ -67,7 +69,11 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
 
   function add(entry: EchoEntry<X>): boolean {
     return event(() => {
-      if (disposed || pending.length >= echoLimit) return false;
+      if (disposed || echoLimit === 0) return false;
+      if (pending.length >= echoLimit) {
+        if (options.echoOverflow !== 'evict-oldest') return false;
+        pending = pending.slice(pending.length - echoLimit + 1);
+      }
       pending = [...pending, entry];
       if (options.echo) paint('paint', () => options.echo!.paint(pending));
       return true;
@@ -78,8 +84,12 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
     event(() => {
       if (disposed) return;
       const ids = new Set(tickets.map((ticket) => ticket.id));
-      const remaining = pending.filter((echo) => !ids.has(echo.ticket.id));
+      let remaining = pending.filter((echo) => !ids.has(echo.ticket.id));
       const changed = remaining.length !== pending.length;
+      if (entry !== undefined && echoLimit > 0 && remaining.length >= echoLimit &&
+        options.echoOverflow === 'evict-oldest') {
+        remaining = remaining.slice(remaining.length - echoLimit + 1);
+      }
       const accepted = entry !== undefined && remaining.length < echoLimit;
       pending = accepted ? [...remaining, entry!] : remaining;
       if ((changed || accepted) && options.echo) paint('paint', () => options.echo!.paint(pending));
@@ -103,15 +113,52 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
     });
   }
 
+  function presentTransactional(frame: FrameEnvelope<F>, sameCoverage: boolean): FrameDisposition {
+    const retired: EchoEntry<X>[] = [];
+    const remaining: EchoEntry<X>[] = [];
+    for (const entry of pending) {
+      const seq = entry.seq ?? entry.ticket.seq;
+      (!sameCoverage && seq !== undefined && seq <= frame.coversThroughSeq ? retired : remaining).push(entry);
+    }
+    const previousInstalling = installing;
+    const generation = resetGeneration;
+    installing = { coverage: frame.coversThroughSeq, revision: frame.revision };
+    try {
+      let accepted = false;
+      const painted = paint('present', () => {
+        accepted = options.echo!.present(frame, retired, remaining) !== false;
+      });
+      if (!painted || !accepted || disposed || generation !== resetGeneration) return 'stale';
+      coverage = Math.max(coverage, frame.coversThroughSeq);
+      revision = revision === undefined ? frame.revision : Math.max(revision, frame.revision);
+      if (sameCoverage) return 'presented';
+      const retiring = new Set(retired);
+      pending = pending.filter((entry) => !retiring.has(entry));
+      const throughSeq = Math.min(coverage, frame.coversThroughSeq);
+      paintedCoverage = Math.max(paintedCoverage, throughSeq);
+      for (const seq of waiters.keys()) {
+        if (seq <= throughSeq) settle(seq, dropped.has(seq) ? 'dropped' : 'presented');
+      }
+      settledCoverage = Math.max(settledCoverage, throughSeq);
+      return 'presented';
+    } finally {
+      if (generation === resetGeneration) installing = previousInstalling;
+    }
+  }
+
   function present(frame: FrameEnvelope<F>): FrameDisposition {
     return event(() => {
       const sameCoverage = frame.coversThroughSeq === coverage;
       if (disposed || frame.coversThroughSeq < coverage || (sameCoverage &&
         (!options.sameCoverageFrames || coverage < 0 || revision === undefined || frame.revision <= revision))) return 'stale';
+      if (installing && (frame.coversThroughSeq < installing.coverage ||
+        (frame.coversThroughSeq === installing.coverage &&
+          (!options.sameCoverageFrames || frame.revision <= installing.revision)))) return 'stale';
       if (frame.baseRevision !== undefined && frame.baseRevision !== revision) {
         options.requestFullFrame();
         return 'base-mismatch';
       }
+      if (options.transactionalPresentation && options.echo) return presentTransactional(frame, sameCoverage);
       if (sameCoverage) {
         revision = frame.revision;
         if (options.echo) paint('present', () => options.echo!.present(frame, [], pending));
@@ -181,6 +228,8 @@ export function createPresenter<X, F>(options: PresenterOptions<X, F>): Presente
     whenPresented,
     reset() {
       if (disposed) return;
+      resetGeneration += 1;
+      installing = undefined;
       coverage = -1;
       settledCoverage = -1;
       paintedCoverage = -1;

@@ -83,6 +83,238 @@ function harness(overrides: Partial<WorkerEditSessionOptions<string, string, str
 }
 
 describe('worker edit session', () => {
+  for (const rejection of ['returns false', 'throws'] as const) {
+    it(`keeps transactional tickets and coverage waiters pending when an ack or pushed frame hook ${rejection}`, async () => {
+      for (const pushed of [false, true]) {
+        let reject = true;
+        const installs: string[] = [];
+        const h = harness({
+          transactionalPresentation: true,
+          echo: {
+            paint() {}, drop() {},
+            present(candidate) {
+              installs.push(candidate.payload);
+              if (!reject) return;
+              if (rejection === 'throws') throw new Error('install failed');
+              return false;
+            },
+          },
+        }, pushed);
+        const first = h.session.submit('insert', 'a', { echo: 'a' });
+        h.pump();
+        let ticketStatus: string | undefined;
+        let coverageStatus: string | undefined;
+        void first.presented.then((status) => { ticketStatus = status; });
+        const waiting = h.session.whenPresented(1).then((status) => { coverageStatus = status; return status; });
+        const rejected = { coversThroughSeq: 1, revision: 10, payload: 'rejected' };
+        h.ack(0, undefined, pushed ? {} : { frame: rejected });
+        expect(await first.ack).toMatchObject({ seq: 1, status: 'applied' });
+        if (pushed) h.events!.push(rejected);
+        await Promise.resolve();
+        expect(ticketStatus).toBeUndefined();
+        expect(coverageStatus).toBeUndefined();
+        expect(h.session.state.presentedThroughSeq).toBe(-1);
+        expect(h.session.state.throughSeq).toBe(1);
+        expect(h.fullRequests).toBe(0);
+        reject = false;
+        const later = h.session.submit('insert', 'b', { echo: 'b' });
+        h.pump();
+        h.ack(1, undefined, { frame: { coversThroughSeq: 2, revision: 11, payload: 'accepted' } });
+        expect(await first.presented).toBe('presented');
+        expect(await waiting).toBe('presented');
+        expect(await later.presented).toBe('presented');
+        expect(h.session.state.presentedThroughSeq).toBe(2);
+        expect(installs).toEqual(['rejected', 'accepted']);
+        expect(h.fullRequests).toBe(0);
+        await h.session.dispose();
+      }
+    });
+  }
+
+  it('stops full-frame retries after transactional rejection and presents pending tickets on a later accepted frame', async () => {
+    for (const throws of [false, true]) {
+      let reject = true;
+      let requests = 0;
+      const h = harness({
+        transactionalPresentation: true,
+        requestFullFrame(connection) {
+          requests += 1;
+          return Promise.resolve({ ...connection.initial, throughSeq: 1, version: 1,
+            frame: { coversThroughSeq: 1, revision: 10 + requests, payload: 'full' } });
+        },
+        echo: {
+          paint() {}, drop() {},
+          present() {
+            if (!reject) return;
+            if (throws) throw new Error('install failed');
+            return false;
+          },
+        },
+      }, true);
+      const first = h.session.submit('insert', 'a', { echo: 'a' });
+      h.pump();
+      let ticketStatus: string | undefined;
+      let coverageStatus: string | undefined;
+      void first.presented.then((status) => { ticketStatus = status; });
+      const waiting = h.session.whenPresented(1).then((status) => { coverageStatus = status; return status; });
+      h.ack(0, undefined, { frame: { coversThroughSeq: 1, revision: 10, baseRevision: 99, payload: 'delta' } });
+      expect(await first.ack).toMatchObject({ seq: 1, status: 'applied' });
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        for (let turn = 0; turn < 32; turn += 1) await Promise.resolve();
+        expect(requests).toBe(attempt);
+        expect(h.disposals).toBe(0);
+        expect(h.session.state.presentedThroughSeq).toBe(-1);
+        expect(ticketStatus).toBeUndefined();
+        expect(coverageStatus).toBeUndefined();
+        if (attempt < 4) h.events!.push({ coversThroughSeq: 1, revision: 20 + attempt,
+          baseRevision: 99, payload: 'delta' });
+      }
+      reject = false;
+      h.events!.push({ coversThroughSeq: 1, revision: 30, payload: 'accepted' });
+      expect(await first.presented).toBe('presented');
+      expect(await waiting).toBe('presented');
+      expect(h.session.state.presentedThroughSeq).toBe(1);
+      expect(requests).toBe(4);
+      expect(h.disposals).toBe(0);
+      await h.session.dispose();
+    }
+  });
+
+  it('fetches a newer full-frame target requested during a transactional reply hook', async () => {
+    for (const rejectOuter of [false, true]) {
+      const requests: Array<ReturnType<typeof deferred<Ack>>> = [];
+      const installs: string[] = [];
+      let push!: (frame: FrameEnvelope<string>) => void;
+      const h = harness({
+        transactionalPresentation: true,
+        requestFullFrame() {
+          const reply = deferred<Ack>();
+          requests.push(reply);
+          return reply.promise;
+        },
+        echo: {
+          paint() {}, drop() {},
+          present(candidate) {
+            installs.push(candidate.payload);
+            if (candidate.payload === 'nested') return false;
+            if (candidate.payload === 'first full') {
+              push({ coversThroughSeq: 2, revision: 20, payload: 'nested' });
+              push({ coversThroughSeq: 2, revision: 21, baseRevision: 99, payload: 'newer delta' });
+              if (rejectOuter) return false;
+            }
+          },
+        },
+      }, true);
+      push = (frame) => h.events!.push(frame);
+      const first = h.session.submit('insert', 'a');
+      const second = h.session.submit('insert', 'b');
+      h.pump();
+      h.ack(0);
+      h.ack(1);
+      await Promise.all([first.ack, second.ack]);
+      let secondPresented = false;
+      void second.presented.then(() => { secondPresented = true; });
+      const waiting = h.session.whenPresented(2);
+      push({ coversThroughSeq: 1, revision: 10, baseRevision: 99, payload: 'first delta' });
+      expect(requests).toHaveLength(1);
+      requests[0]!.resolve({ ...h.connection.initial, throughSeq: 1, version: 1,
+        frame: { coversThroughSeq: 1, revision: 10, payload: 'first full' } });
+      for (let turn = 0; turn < 16; turn += 1) await Promise.resolve();
+      expect(requests).toHaveLength(2);
+      expect(secondPresented).toBe(false);
+      expect(h.session.state.presentedThroughSeq).toBe(rejectOuter ? -1 : 1);
+      expect(h.disposals).toBe(0);
+      requests[1]!.resolve({ ...h.connection.initial, throughSeq: 2, version: 2,
+        frame: { coversThroughSeq: 2, revision: 21, payload: 'second full' } });
+      expect(await second.presented).toBe('presented');
+      expect(await first.presented).toBe('presented');
+      expect(await waiting).toBe('presented');
+      expect(h.session.state.presentedThroughSeq).toBe(2);
+      expect(installs).toEqual(['first full', 'nested', 'second full']);
+      expect(requests).toHaveLength(2);
+      expect(h.disposals).toBe(0);
+      await h.session.dispose();
+    }
+  });
+
+  it('avoids retrying a full-frame target satisfied by a nested transactional install', async () => {
+    const full = deferred<Ack>();
+    const installs: string[] = [];
+    let requests = 0;
+    let push!: (frame: FrameEnvelope<string>) => void;
+    const h = harness({
+      transactionalPresentation: true,
+      sameCoverageFrames: true,
+      maxRecoveryAttempts: 0,
+      requestFullFrame() {
+        requests += 1;
+        return requests === 1 ? full.promise : Promise.reject(new Error('unexpected full-frame request'));
+      },
+      echo: {
+        paint() {}, drop() {},
+        present(candidate) {
+          installs.push(candidate.payload);
+          if (candidate.payload === 'first full') {
+            push({ coversThroughSeq: 2, revision: 20, baseRevision: 99, payload: 'newer delta' });
+            push({ coversThroughSeq: 2, revision: 20, payload: 'second full' });
+            return false;
+          }
+        },
+      },
+    }, true);
+    push = (frame) => h.events!.push(frame);
+    const first = h.session.submit('insert', 'a');
+    const second = h.session.submit('insert', 'b');
+    h.pump();
+    h.ack(0);
+    h.ack(1);
+    await Promise.all([first.ack, second.ack]);
+    const waiting = h.session.whenPresented(2);
+    push({ coversThroughSeq: 1, revision: 10, baseRevision: 99, payload: 'first delta' });
+    expect(requests).toBe(1);
+    full.resolve({ ...h.connection.initial, throughSeq: 1, version: 1,
+      frame: { coversThroughSeq: 1, revision: 10, payload: 'first full' } });
+    for (let turn = 0; turn < 16; turn += 1) await Promise.resolve();
+    expect(requests).toBe(1);
+    expect(h.disposals).toBe(0);
+    expect(h.events!.listeners).toBe(1);
+    expect(await second.presented).toBe('presented');
+    expect(await first.presented).toBe('presented');
+    expect(await waiting).toBe('presented');
+    expect(h.session.state.presentedThroughSeq).toBe(2);
+    expect(installs).toEqual(['first full', 'second full']);
+    await h.session.flush();
+    await h.session.dispose();
+  });
+
+  it('preserves the evicted echo command acknowledgement and presents it on a covering frame', async () => {
+    const h = harness({ maxEchoEntries: 1, echoOverflow: 'evict-oldest' });
+    const first = h.session.submit('insert', 'a', { echo: 'a' });
+    h.pump();
+    const waiting = h.session.whenPresented(1);
+    const later = h.session.submit('insert', 'b', { echo: 'b' });
+    h.pump();
+    let acked = false;
+    let presented = false;
+    void first.ack.then(() => { acked = true; });
+    void first.presented.then(() => { presented = true; });
+    await Promise.resolve();
+    expect(acked).toBe(false);
+    expect(presented).toBe(false);
+    expect(h.drops).toEqual([]);
+    h.ack(0);
+    expect(await first.ack).toEqual({ seq: 1, status: 'applied' });
+    expect(presented).toBe(false);
+    h.ack(1, undefined, { frame: { coversThroughSeq: 2, revision: 1, payload: 'ab' } });
+    expect(await later.ack).toEqual({ seq: 2, status: 'applied' });
+    expect(await first.presented).toBe('presented');
+    expect(await later.presented).toBe('presented');
+    expect(await waiting).toBe('presented');
+    expect(h.frames).toEqual([{ payload: 'ab', retired: ['b'], remaining: [] }]);
+    expect(h.drops).toEqual([]);
+    await h.session.dispose();
+  });
+
   it('installs opted-in pushed frames at unchanged coverage, publishes state, and leaves tickets untouched', async () => {
     const h = harness({ sameCoverageFrames: true }, true);
     const published: number[] = [];

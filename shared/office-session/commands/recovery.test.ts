@@ -101,6 +101,223 @@ async function turns() {
 }
 
 describe('worker edit recovery', () => {
+  it('cancels a queued descendant when an acknowledged ancestor RPC rejects with recovery disabled', async () => {
+    const h = harness({ maxRecoveryAttempts: 0, maxInFlight: 2 });
+    const first = h.session.submit('insert', 'a');
+    const second = h.session.submit('insert', 'b', { after: first });
+    const third = h.session.submit('insert', 'c', { after: second });
+    h.pump();
+    expect(h.first.edits.map((entry) => entry.envelope.seq)).toEqual([1, 2]);
+    expect(third.seq).toBeUndefined();
+    const thirdOutcome = third.ack.catch((error: unknown) => error);
+    h.first.ack(1, { version: 2, outcomes: [
+      { seq: 1, status: 'applied' }, { seq: 2, status: 'applied' },
+    ] });
+    expect(await first.ack).toMatchObject({ seq: 1, status: 'applied' });
+    expect(await second.ack).toMatchObject({ seq: 2, status: 'applied' });
+    h.first.edits[0]!.reply.reject(new Error('apply failed'));
+    await turns();
+    expect(await thirdOutcome).toMatchObject({ status: 'cancelled', reason: 'dependency-refused' });
+    expect(await first.ack).toMatchObject({ seq: 1, status: 'applied' });
+    expect(await second.ack).toMatchObject({ seq: 2, status: 'applied' });
+    expect(await Promise.all([first.presented, second.presented, third.presented])).toEqual([
+      'dropped', 'dropped', 'dropped',
+    ]);
+    expect(h.reopens).toHaveLength(0);
+    expect(h.first.edits).toHaveLength(2);
+    await h.session.dispose();
+  });
+
+  it('cancels all 65 queued descendants before terminating with recovery disabled', async () => {
+    const h = harness({ maxRecoveryAttempts: 0, maxInFlight: 1 });
+    const root = h.session.submit('insert', 'a');
+    const children = Array.from({ length: 65 }, () => h.session.submit('insert', 'child', { after: root }));
+    const independent = h.session.submit('insert', 'independent');
+    const outcomes = children.map((ticket) => ticket.ack.catch((error: unknown) => error));
+    const rejected = independent.ack.catch((error: unknown) => error);
+    h.pump();
+    expect(h.first.edits).toHaveLength(1);
+    expect(children.every((ticket) => ticket.seq === undefined)).toBe(true);
+    h.first.edits[0]!.reply.reject(new Error('apply failed'));
+    await turns();
+    expect(await root.ack).toMatchObject({ seq: 1, status: 'refused', reason: 'unknown-outcome' });
+    for (const outcome of await Promise.all(outcomes)) {
+      expect(outcome).toMatchObject({ status: 'cancelled', reason: 'dependency-refused' });
+    }
+    expect(await rejected).toBe(h.events[0]!.failure);
+    expect(h.events).toEqual([expect.objectContaining({ phase: 'failed', attempt: 0 })]);
+    expect(await Promise.all(children.map((ticket) => ticket.presented))).toEqual(Array(65).fill('dropped'));
+    expect(await root.presented).toBe('dropped');
+    expect(await independent.presented).toBe('dropped');
+    expect(h.reopens).toHaveLength(0);
+    expect(h.first.edits).toHaveLength(1);
+    await h.session.dispose();
+  });
+
+  it('cancels a queued descendant after a reversed ack and an unknown ancestor outcome with recovery disabled', async () => {
+    const h = harness({ maxRecoveryAttempts: 0, maxInFlight: 2 });
+    const first = h.session.submit('insert', 'a');
+    const second = h.session.submit('insert', 'b', { after: first });
+    const third = h.session.submit('insert', 'c', { after: second });
+    h.pump();
+    expect(h.first.edits.map((entry) => entry.envelope.seq)).toEqual([1, 2]);
+    expect(third.seq).toBeUndefined();
+    const thirdOutcome = third.ack.catch((error: unknown) => error);
+    h.first.ack(1, { version: 2 });
+    expect(await second.ack).toMatchObject({ seq: 2, status: 'applied' });
+    h.first.edits[0]!.reply.reject(new Error('apply failed'));
+    await turns();
+    expect(await first.ack).toMatchObject({ seq: 1, status: 'refused', reason: 'unknown-outcome' });
+    expect(await thirdOutcome).toMatchObject({ status: 'cancelled', reason: 'dependency-refused' });
+    expect(await second.ack).toMatchObject({ seq: 2, status: 'applied' });
+    expect(await Promise.all([first.presented, second.presented, third.presented])).toEqual([
+      'dropped', 'dropped', 'dropped',
+    ]);
+    expect(h.reopens).toHaveLength(0);
+    expect(h.first.edits).toHaveLength(2);
+    await h.session.dispose();
+  });
+
+  it('rejects every pending ack and drops presentations without recovery at zero attempts', async () => {
+    for (const code of ['crash', 'trap', 'out-of-memory', 'silence'] as const) {
+      const h = harness({ maxRecoveryAttempts: 0, maxInFlight: 2 });
+      const acked = h.session.submit('insert', 'a');
+      h.pump();
+      h.first.ack(0);
+      await acked.ack;
+      const pending = ['b', 'c', 'd'].map((payload) => h.session.submit('insert', payload));
+      h.pump();
+      expect(pending.map((ticket) => ticket.seq)).toEqual([2, 3, undefined]);
+      const rejections = pending.map((ticket) => ticket.ack.catch((error: unknown) => error));
+      const covered = h.session.whenPresented(1);
+      const future = h.session.whenPresented(4);
+      const failure = h.first.fail(code);
+      await turns();
+      expect(h.reopens).toHaveLength(0);
+      expect(h.first.checkpoints).toHaveLength(0);
+      expect(h.events).toEqual([expect.objectContaining({ phase: 'failed', attempt: 0, failure })]);
+      for (const error of await Promise.all(rejections)) expect(error).toBe(failure);
+      expect(await Promise.all([acked, ...pending].map((ticket) => ticket.presented))).toEqual([
+        'dropped', 'dropped', 'dropped', 'dropped',
+      ]);
+      expect(await covered).toBe('dropped');
+      expect(await future).toBe('dropped');
+      expect(await acked.ack).toMatchObject({ seq: 1, status: 'applied' });
+      await h.session.dispose();
+    }
+  });
+
+  it('never consults checkpoint policy or checkpoints after accepted acks when recovery is disabled', async () => {
+    let policyCalls = 0;
+    const h = harness({
+      maxRecoveryAttempts: 0,
+      checkpointPolicy() { policyCalls += 1; return true; },
+    });
+    const first = h.session.submit('insert', 'a');
+    h.pump();
+    h.first.ack(0);
+    expect(await first.ack).toMatchObject({ status: 'applied' });
+    h.pump();
+    await turns();
+    expect(policyCalls).toBe(0);
+    expect(h.first.checkpoints).toHaveLength(0);
+    const pending = h.session.submit('insert', 'b');
+    h.pump();
+    const rejected = pending.ack.catch((error: unknown) => error);
+    const failure = h.first.fail();
+    await turns();
+    expect(h.reopens).toHaveLength(0);
+    expect(policyCalls).toBe(0);
+    expect(h.first.checkpoints).toHaveLength(0);
+    expect(h.events).toEqual([expect.objectContaining({ phase: 'failed', attempt: 0, failure })]);
+    expect(await rejected).toBe(failure);
+    expect(await first.presented).toBe('dropped');
+    expect(await pending.presented).toBe('dropped');
+    await h.session.dispose();
+  });
+
+  it('constructs with an unread source holding a function when recovery is disabled', async () => {
+    const first = worker();
+    const source = { callback() {} };
+    let sourceReads = 0;
+    let reopens = 0;
+    let checkpoints = 0;
+    const session = createWorkerEditSession({
+      get source() { sourceReads += 1; return source; },
+      connection: first.connection, maxRecoveryAttempts: 0, now: () => 0,
+      recovery: {
+        reopen() { reopens += 1; return Promise.resolve(first.connection); },
+        checkpoint() {
+          checkpoints += 1;
+          return Promise.resolve({ state: new Uint8Array(), epoch: 1, version: 0, throughSeq: 0 });
+        },
+      },
+      requestFullFrame: () => Promise.resolve(first.connection.initial),
+    });
+    expect(sourceReads).toBe(0);
+    expect(session.state.presentedThroughSeq).toBe(0);
+    await session.dispose();
+    expect(sourceReads).toBe(0);
+    expect(reopens).toBe(0);
+    expect(checkpoints).toBe(0);
+  });
+
+  it('keeps unknown outcomes, pending presentations, and refusal dependencies intact with recovery disabled', async () => {
+    const h = harness({ maxRecoveryAttempts: 0, maxInFlight: 3 });
+    const root = h.session.submit('insert', 'a');
+    const independent = h.session.submit('insert', 'b');
+    const child = h.session.submit('insert', 'c', { after: root });
+    const queuedChild = h.session.submit('insert', 'd', { after: child });
+    h.pump();
+    let rootAcked = false;
+    let independentPresented = false;
+    void root.ack.then(() => { rootAcked = true; });
+    void independent.presented.then(() => { independentPresented = true; });
+    h.first.ack(1, { version: 1 });
+    expect(await independent.ack).toMatchObject({ seq: 2, status: 'applied' });
+    expect(rootAcked).toBe(false);
+    expect(independentPresented).toBe(false);
+    const waiting = h.session.whenPresented(2);
+    h.first.ack(0, { version: 0, outcomes: [{ seq: 1, status: 'refused', reason: 'locked' }] });
+    expect(await root.ack).toMatchObject({ seq: 1, status: 'refused', reason: 'locked' });
+    h.first.ack(2, { version: 1, outcomes: [{ seq: 3, status: 'cancelled', reason: 'dependency-refused' }] });
+    expect(await child.ack).toMatchObject({ seq: 3, status: 'cancelled', reason: 'dependency-refused' });
+    expect(await queuedChild.ack).toMatchObject({ status: 'cancelled', reason: 'dependency-refused' });
+    const lateChild = h.session.submit('insert', 'e', { after: root });
+    expect(await lateChild.ack).toMatchObject({ status: 'cancelled', reason: 'dependency-refused' });
+    const later = h.session.submit('insert', 'f');
+    h.pump();
+    h.first.ack(3, { frame: { coversThroughSeq: 4, revision: 1, payload: 'bf' } });
+    expect(await independent.presented).toBe('presented');
+    expect(await waiting).toBe('presented');
+    expect(await later.presented).toBe('presented');
+    expect(await root.presented).toBe('dropped');
+    expect(await child.presented).toBe('dropped');
+    expect(await h.session.whenPresented(3)).toBe('dropped');
+    const failure = h.first.fail();
+    await turns();
+    expect(h.reopens).toHaveLength(0);
+    expect(h.events).toEqual([expect.objectContaining({ phase: 'failed', attempt: 0, failure })]);
+    await h.session.dispose();
+  });
+
+  it('recovers after a crash when maxRecoveryAttempts is undefined', async () => {
+    const h = harness({ maxRecoveryAttempts: undefined });
+    const ticket = h.session.submit('insert', 'a');
+    h.pump();
+    h.first.fail();
+    await turns();
+    expect(h.reopens).toHaveLength(1);
+    const next = h.reopen(0);
+    await turns();
+    next.ack(0, { frame: { coversThroughSeq: 1, revision: 1, payload: 'a' } });
+    expect(await ticket.ack).toMatchObject({ seq: 1, status: 'applied' });
+    expect(await ticket.presented).toBe('presented');
+    await turns();
+    expect(h.events.map((event) => event.phase)).toEqual(['recovering', 'recovered']);
+    await h.session.dispose();
+  });
+
   it('cancels indexed replay descendants in bounded chunks and keeps independent history', async () => {
     const h = harness({ maxInFlight: 256, checkpointPolicy: () => false });
     const root = h.session.submit('insert', 'root');

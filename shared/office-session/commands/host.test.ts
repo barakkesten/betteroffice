@@ -75,6 +75,48 @@ async function edit(host: Host, command: CommandEnvelope<Payload>): Promise<Ack>
 }
 
 describe('command host', () => {
+  it('acknowledges edits without a frame when the hook returns undefined and keeps later operations usable', async () => {
+    for (const asynchronous of [false, true]) {
+      let skip = true;
+      const s = model({ frame(input) {
+        const candidate = skip ? undefined : {
+          coversThroughSeq: input.coversThroughSeq, revision: input.version, payload: new Uint8Array([input.version]),
+        };
+        return asynchronous ? Promise.resolve(candidate) : candidate;
+      } });
+      const first = await edit(s.host, envelope(1));
+      expect(first).toMatchObject({ throughSeq: 1, version: 11, outcomes: [{ seq: 1, status: 'applied' }] });
+      expect(Object.prototype.hasOwnProperty.call(first, 'frame')).toBe(false);
+      skip = false;
+      const next = await edit(s.host, envelope(2));
+      expect(next.frame).toMatchObject({ coversThroughSeq: 2, revision: 12, payload: new Uint8Array([12]) });
+      expect(value(await s.host.checkpoint(null))).toMatchObject({ throughSeq: 2, version: 12 });
+      expect(value(await s.host.frame())).toMatchObject({ coversThroughSeq: 2, revision: 12 });
+      expect(s.calls).toEqual([1, 2]);
+    }
+  });
+
+  it('rejects an explicit missing frame with a plain Error and permits a later frame request', async () => {
+    for (const asynchronous of [false, true]) {
+      let skip = true;
+      const s = model({ frame(input) {
+        const candidate = skip ? undefined : {
+          coversThroughSeq: input.coversThroughSeq, revision: input.version, payload: new Uint8Array([input.version]),
+        };
+        return asynchronous ? Promise.resolve(candidate) : candidate;
+      } });
+      const error = await s.host.frame().catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(SessionFailure);
+      expect((error as Error).constructor).toBe(Error);
+      skip = false;
+      expect(value(await s.host.frame())).toMatchObject({ coversThroughSeq: 0, revision: 10 });
+      const ack = await edit(s.host, envelope(1));
+      expect(ack.frame).toMatchObject({ coversThroughSeq: 1, revision: 11 });
+      expect(s.calls).toEqual([1]);
+    }
+  });
+
   it('builds frames after queued and admitted edits at their settled boundary', async () => {
     const entered = deferred<void>();
     const held = deferred<void>();
