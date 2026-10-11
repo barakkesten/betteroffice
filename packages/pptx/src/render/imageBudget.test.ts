@@ -1,5 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test';
 import { decodePresentationImage, imageDecodeScale, presentationImageBlob } from './image';
+import type { PresentationImageDecodeOptions } from './image';
+import { browserPresentationImageBlob, decodeBrowserImageBlob, decodeBrowserPresentationImage } from './browserImage';
 import { paintSlide } from './canvas';
 
 class DecodeCanvas {
@@ -50,6 +52,34 @@ function rasterHeaders(): [string, Uint8Array, number, number][] {
 }
 
 describe('presentation image decode budget', () => {
+  test.each([
+    ['bytes', (bytes: Uint8Array, options: PresentationImageDecodeOptions) =>
+      decodeBrowserPresentationImage(bytes, 'undecodable', options)],
+    ['blob', (bytes: Uint8Array, options: PresentationImageDecodeOptions) =>
+      decodeBrowserImageBlob(browserPresentationImageBlob(bytes), 'undecodable', options)],
+  ] as const)('browser %s decodes honor caps and share the presentation scale map', async (_kind, decode) => {
+    const original = globalThis.createImageBitmap;
+    const bounded = { width: 2560, height: 1280 } as ImageBitmap;
+    const bitmap = mock((_blob: Blob, _options?: ImageBitmapOptions) => Promise.resolve(bounded));
+    globalThis.createImageBitmap = bitmap as typeof createImageBitmap;
+    try {
+      const source = await decode(png(8192, 4096), { maxDimension: 2560 });
+      expect(bitmap.mock.calls).toEqual([[expect.any(Blob), { resizeWidth: 2560, resizeHeight: 1280 }]]);
+      expect(source).toBe(bounded);
+      expect(imageDecodeScale(source)).toEqual({ x: 8192 / 2560, y: 4096 / 1280 });
+    } finally {
+      globalThis.createImageBitmap = original;
+    }
+  });
+
+  test.each([0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects an invalid cap before TIFF conversion (%s)', async (maxDimension) => {
+      const tiff = new Uint8Array([0x49, 0x49, 0x2a, 0]);
+      await expect(decodePresentationImage(tiff, 'undecodable', { maxDimension }))
+        .rejects.toThrow('invalid image dimension limit');
+    }
+  );
+
   test.each([[8192, 4096, 4096, 2048], [4096, 8192, 2048, 4096]])(
     'caps oversized pictures before decoding (%s by %s)',
     async (width, height, resizeWidth, resizeHeight) => {

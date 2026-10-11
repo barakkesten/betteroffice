@@ -16,7 +16,7 @@ import type {
   TextBoxPrimitive,
 } from '../types';
 import type { ProposalTextChange } from '../proposals';
-import { imageDecodeScale, setImageDecodeScale } from './image';
+import { imageDecodeScale, setImageDecodeScale } from './browserImage';
 
 export type CanvasImageResolver = ((
   assetId: string

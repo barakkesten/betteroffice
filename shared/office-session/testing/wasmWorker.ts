@@ -56,6 +56,7 @@ export async function sessionWasmFactory<Client>(clientPath: string, workerPath:
               export const decodeTiffImage = () => { throw new Error('decodeTiffImage is not stubbed'); };
               export const presentationDisplayListJson = () => { throw new Error('presentationDisplayListJson is not stubbed'); };
               export const presentationMetadata = () => ({ slides: [], size: { width: 0, height: 0 } });
+              export const presentationStoryFormatting = () => { throw new Error('presentationStoryFormatting is not stubbed'); };
               export const workbookDisplayListJson = () => { throw new Error('workbookDisplayListJson is not stubbed'); };
               export const workbookPeerHydration = () => { throw new Error('workbookPeerHydration is not stubbed'); };
               export const workbookPeerSnapshot = () => { throw new Error('workbookPeerSnapshot is not stubbed'); };

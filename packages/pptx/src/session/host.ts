@@ -13,6 +13,9 @@ import {
   type PresentationHandle, type PresentationPeerHandle,
 } from '../wasm/loader';
 import { frameAssetIds } from './frame';
+import { registerPresentationCommandHandlers } from './commandHost';
+import type { PresentationCommandMethods } from './commandProtocol';
+import type { PresentationSharedMethods } from './commandSharedAdapter';
 import { peerHydrationError } from './editorPeerHydrationError';
 import { PptxPeerHydrationError } from './peerHydrationError';
 import {
@@ -254,10 +257,15 @@ export function createPresentationSessionHost(
     },
   };
 
-  const host = createSessionHost<PresentationSessionMethods & PresentationEditorMethods, Events, null>(transport, {
-    handlers: { ...handlers, ...editorHandlers },
-    policies: { ...PRESENTATION_SESSION_POLICIES, ...PRESENTATION_EDITOR_POLICIES },
-    context: null, onDispose: dispose,
+  const commands = registerPresentationCommandHandlers({ initWasm: options.initWasm });
+  const host = createSessionHost<
+    PresentationSessionMethods & PresentationEditorMethods & PresentationCommandMethods & PresentationSharedMethods, Events, null
+  >(transport, {
+    handlers: { ...handlers, ...editorHandlers, ...commands.handlers },
+    policies: { ...PRESENTATION_SESSION_POLICIES, ...PRESENTATION_EDITOR_POLICIES, ...commands.policies },
+    context: null, onDispose() {
+      try { dispose(); } finally { commands.dispose(); }
+    },
   });
   return host;
 }
