@@ -164,9 +164,9 @@ test('empty_ready', async () => {
   expect(ready).toHaveBeenCalledTimes(1);
 });
 
-test('no_file', () => {
+test('no_file', async () => {
   const view = render(<PptxEditor fonts={[]} {...optIn} />);
-  expect(view.getByRole('status').textContent).toContain('Open');
+  await waitFor(() => expect(view.getByRole('status').textContent).toContain('Open'));
   expect(view.getByRole('status').textContent).not.toContain('Preparing');
   expect(sessions).toHaveLength(0);
 });
@@ -268,6 +268,7 @@ test('replacement_open', async () => {
   const painter = spyOn(peerlessPainterFactories, 'frame');
   restorers.push(() => painter.mockRestore());
   const view = render(<PptxEditor fonts={[]} file={await deck()} {...optIn} onReady={ready} onError={errors} />);
+  await waitFor(() => expect(sessions).toHaveLength(1));
   const retired = await sessions[0].ready;
   const replacement = await deck(0);
   await act(async () => { view.rerender(<PptxEditor fonts={[]} file={replacement} {...optIn} onReady={ready} onError={errors} />); });

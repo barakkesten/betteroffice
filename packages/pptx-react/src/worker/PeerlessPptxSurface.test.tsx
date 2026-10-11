@@ -3,6 +3,7 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import JSZip from 'jszip';
+import { StrictMode } from 'react';
 import * as pptx from '@betteroffice/pptx';
 import * as browserImage from '../../../pptx/src/render/browserImage';
 import { createSessionHost } from '../../../../shared/office-session/host';
@@ -21,7 +22,7 @@ import type {
   PresentationCommandSelected, PresentationCommandSelection, PresentationCommandThumbnailResult, PptxReadRequest,
   SlideDisplayList, TextBoxPrimitive,
 } from '@betteroffice/pptx';
-import { PEERLESS_FLAG, PptxEditor } from '../PptxEditor';
+import { PEERLESS_FLAG, PptxEditor, pptxPeerlessEditorLoader } from '../PptxEditor';
 import type { PptxAsyncEditorApi } from './createPeerlessEditorApi';
 import type { PeerlessConfirmedFrame, PeerlessViewSnapshot } from './peerlessViewStore';
 import { peerlessPainterFactories, peerlessSessionOpener, type PeerlessPresentation } from './usePeerlessPresentation';
@@ -133,8 +134,9 @@ function expectIntact(canvas: HTMLCanvasElement, authoritative: HTMLCanvasElemen
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function textSelection(at: PresentationCommandSelected | null): PresentationCommandSelection {
@@ -368,6 +370,73 @@ afterEach(() => {
   for (const restore of restorers.splice(0).reverse()) restore();
 });
 afterAll(async () => { if (ownsDom) await GlobalRegistrator.unregister(); });
+
+describe('peerless editor chunk failures', () => {
+  beforeEach(() => {
+    const errors = spyOn(console, 'error').mockImplementation(() => {});
+    restorers.push(() => errors.mockRestore());
+  });
+
+  async function rejectChunk(reject: (reason: unknown) => void, failure: Error) {
+    try { await act(async () => { reject(failure); }); }
+    catch (error) { if (error !== failure) throw error; }
+  }
+
+  test('keeps host siblings mounted and shows the editor error after a rejected import', async () => {
+    const chunk = deferred<Awaited<ReturnType<typeof pptxPeerlessEditorLoader.load>>>();
+    const load = spyOn(pptxPeerlessEditorLoader, 'load').mockReturnValue(chunk.promise);
+    restorers.push(() => load.mockRestore());
+    const view = render(<><span>Host sibling</span>
+      <PptxEditor fonts={[]} file={file} {...{ [PEERLESS_FLAG]: true as const }} />
+    </>);
+    await rejectChunk(chunk.reject, new TypeError('Chunk fetch failed'));
+    expect(view.queryByText('Host sibling')).not.toBeNull();
+    expect(view.getByTestId('pptx-error').getAttribute('role')).toBe('alert');
+    expect(view.getByTestId('pptx-error').textContent).toContain('Failed to load');
+  });
+
+  test('reports a typed chunk load error once even when the host callback throws', async () => {
+    const chunk = deferred<Awaited<ReturnType<typeof pptxPeerlessEditorLoader.load>>>();
+    const load = spyOn(pptxPeerlessEditorLoader, 'load').mockReturnValue(chunk.promise);
+    restorers.push(() => load.mockRestore());
+    const onError = mock((_error: Error) => { throw new Error('Host callback failed'); });
+    const props = { fonts: [], file, [PEERLESS_FLAG]: true as const, onError };
+    const view = render(<StrictMode><span>Host sibling</span><PptxEditor {...props} /></StrictMode>);
+    const failure = new TypeError('Chunk fetch failed');
+    await rejectChunk(chunk.reject, failure);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toBeInstanceOf(Error);
+    expect(onError.mock.calls[0][0]).toMatchObject({
+      name: 'PptxWorkerEditorChunkLoadError', code: 'chunk-load-failed', cause: failure,
+    });
+    view.rerender(<StrictMode><span>Host sibling</span><PptxEditor {...props} file={new Uint8Array([4])} /></StrictMode>);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(view.queryByText('Host sibling')).not.toBeNull();
+  });
+
+  test('retries a transient import failure on a later mount without opening a main-thread peer', async () => {
+    const value = session();
+    const main = spyOn(pptx, 'initWasm').mockImplementation(() => { throw new Error('Main wasm initialized'); });
+    const model = spyOn(pptx, 'openPresentation').mockImplementation(() => { throw new Error('Main peer opened'); });
+    const chunk = deferred<Awaited<ReturnType<typeof pptxPeerlessEditorLoader.load>>>();
+    const originalLoad = pptxPeerlessEditorLoader.load;
+    const load = spyOn(pptxPeerlessEditorLoader, 'load').mockImplementation(originalLoad).mockReturnValueOnce(chunk.promise);
+    restorers.push(() => main.mockRestore(), () => model.mockRestore(), () => load.mockRestore());
+    const onError = mock((_error: Error) => {});
+    const props = { fonts: [], file, [PEERLESS_FLAG]: true as const, onError };
+    const failed = render(<PptxEditor {...props} />);
+    await rejectChunk(chunk.reject, new TypeError('Transient chunk fetch failure'));
+    failed.unmount();
+    const ready = mock((_api: PptxAsyncEditorApi) => {});
+    render(<PptxEditor {...props} onReady={ready} />);
+    await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(value.client.state.frame).not.toBeNull();
+    expect(main).not.toHaveBeenCalled();
+    expect(model).not.toHaveBeenCalled();
+  });
+});
 
 test('p2_peerless_mount_ready_after_first_authoritative_paint', async () => {
   const value = session(true);
@@ -2983,7 +3052,7 @@ describe('peerless stage fit', () => {
       published.push([canvas.style.width, canvas.style.height, canvas.width, canvas.height]);
     });
     const view = render(<PptxEditor fonts={[]} file={file} {...{ [PEERLESS_FLAG]: true as const }} onReady={ready} />);
-    const canvas = view.getByTestId('pptx-slide-canvas') as HTMLCanvasElement;
+    const canvas = await view.findByTestId('pptx-slide-canvas') as HTMLCanvasElement;
     try {
       await flushStage(value.admit);
       expect(published).toEqual([['48px', '27px', 96, 54]]);
@@ -3025,7 +3094,7 @@ describe('peerless stage fit', () => {
       status: 'frame', frame: { ...pictureFrame(value.client.state.frame, 'old-thumbnail'), slideId, slideIndex: 1 } }));
     const ready = mock((_api: PptxAsyncEditorApi) => {});
     const view = render(<PptxEditor fonts={[]} file={file} {...{ [PEERLESS_FLAG]: true as const }} onReady={ready} />);
-    const canvas = view.getByTestId('pptx-slide-canvas') as HTMLCanvasElement;
+    const canvas = await view.findByTestId('pptx-slide-canvas') as HTMLCanvasElement;
     const oldRasters: { frame: PeerlessConfirmedFrame; scale: number;
       raster: NonNullable<ReturnType<typeof commandFrameRaster>>; tiles: HTMLCanvasElement[] }[] = [];
     const collect = () => {

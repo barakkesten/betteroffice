@@ -41,6 +41,7 @@ import { LocaleProvider, useTranslation } from './i18n';
 import { ProposalsPanel } from './components/ProposalsPanel';
 import { ProposalCanvasOverlay, ProposalCanvasToolbar, ProposalNotesDiff, useProposalCanvas } from './components/ProposalCanvas';
 import {
+  Component,
   memo,
   lazy,
   Suspense,
@@ -148,7 +149,46 @@ import { PptxAsyncEditorUnavailableError } from './worker/PptxAsyncEditorUnavail
 
 const THUMBNAIL_SLICE_MS = 12;
 export const PEERLESS_FLAG = 'asyncApi' as const;
-const PeerlessPptxSurface = lazy(() => import('./worker/PeerlessPptxSurface').then((module) => ({ default: module.PeerlessPptxSurface })));
+export const pptxPeerlessEditorLoader = { load: () => import('./worker/PeerlessPptxSurface') };
+
+export class PptxWorkerEditorChunkLoadError extends Error {
+  readonly code = 'chunk-load-failed';
+  constructor(readonly cause: unknown) {
+    super('Failed to load the worker editor. Remount the editor to retry.');
+    this.name = 'PptxWorkerEditorChunkLoadError';
+  }
+}
+
+type PeerlessEditorBoundaryProps = Pick<PptxAsyncEditorProps, 'onError' | 'className'> & {
+  children: ReactNode;
+};
+
+function PeerlessEditorError({ error, className }: { error: Error; className?: string }) {
+  return <div data-testid="pptx-error" role="alert" className={className}>
+    {error.message}
+  </div>;
+}
+
+class PeerlessEditorBoundary extends Component<PeerlessEditorBoundaryProps, { error: Error | null }> {
+  state = { error: null as Error | null };
+  private reported: Error | null = null;
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+
+  componentDidCatch() {
+    const error = this.state.error;
+    if (!error || this.reported === error) return;
+    this.reported = error;
+    try { this.props.onError?.(error); } catch {}
+  }
+
+  render() {
+    return this.state.error ? <PeerlessEditorError error={this.state.error} className={this.props.className} />
+      : this.props.children;
+  }
+}
 
 export interface PptxTextSelection {
   shapeId: string;
@@ -531,6 +571,9 @@ export function PptxEditor({
 
 function PptxAsyncEditorSession(props: PptxAsyncEditorProps) {
   const { t } = useTranslation();
+  const [PeerlessPptxSurface] = useState(() => lazy(() => pptxPeerlessEditorLoader.load()
+    .then((module) => ({ default: module.PeerlessPptxSurface }))
+    .catch((cause: unknown) => { throw new PptxWorkerEditorChunkLoadError(cause); })));
   const [workerAvailable] = useState(() => typeof Worker === 'function');
   const [canvasAvailable] = useState(() => typeof OffscreenCanvas === 'function');
   const reason = (props as { experimentalWorkerOpen?: boolean }).experimentalWorkerOpen === false ? 'worker-open-disabled'
@@ -556,7 +599,11 @@ function PptxAsyncEditorSession(props: PptxAsyncEditorProps) {
     if (error) onError.current?.(error);
   }, [error, reason]);
   return error ? <div className={props.className} role="alert">{error.message}</div>
-    : <Suspense fallback={<div className={props.className} role="status">{t('worker.preparing')}</div>}><PeerlessPptxSurface {...props} /></Suspense>;
+    : <PeerlessEditorBoundary onError={props.onError} className={props.className}>
+      <Suspense fallback={<div className={props.className} role="status">{t('worker.preparing')}</div>}>
+        <PeerlessPptxSurface {...props} />
+      </Suspense>
+    </PeerlessEditorBoundary>;
 }
 
 function PptxEditorSession(props: PptxWorkerEditorProps | PptxWorkerViewerProps | WorkerSessionProps | PptxEditorProps) {

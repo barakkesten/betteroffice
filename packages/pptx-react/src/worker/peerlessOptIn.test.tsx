@@ -194,7 +194,7 @@ test('refusal_reason_cycle', async () => {
   expect(opener).not.toHaveBeenCalled();
   view.rerender(<PptxEditor {...props} />);
   expect(view.queryByRole('alert')).toBeNull();
-  expect(opener).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(opener).toHaveBeenCalledTimes(1));
   view.rerender(<PptxEditor {...disabled} />);
   expect(onError).toHaveBeenCalledTimes(2);
   expect(view.getByRole('alert').textContent).toMatch(/experimentalWorkerOpen/i);
@@ -217,10 +217,11 @@ test('refusal_file_change', async () => {
   expect(view.container.querySelector('[role="application"]')).toBeNull();
 });
 
-test('toggling the async API flag disposes the old session and mounts a fresh session', () => {
+test('toggling the async API flag disposes the old session and mounts a fresh session', async () => {
   const { owner, opener } = pendingSession();
   const onReady = mock(() => {});
   const view = render(<PptxEditor fonts={[]} file={file} readOnly {...{ [PEERLESS_FLAG]: true as const }} onReady={onReady} />);
+  await view.findByTestId('pptx-peerless-editor');
   view.rerender(<PptxEditor fonts={[]} file={file} readOnly {...{ [PEERLESS_FLAG]: false as const }} onReady={onReady} />);
   expect(owner.dispose).toHaveBeenCalledTimes(1);
   expect(view.queryByTestId('pptx-peerless-editor')).toBeNull();
@@ -228,7 +229,7 @@ test('toggling the async API flag disposes the old session and mounts a fresh se
   const next: PeerlessSession = { ...owner, dispose: mock(() => Promise.resolve()) };
   opener.mockReturnValue(next);
   view.rerender(<PptxEditor fonts={[]} file={file} readOnly {...{ [PEERLESS_FLAG]: true as const }} onReady={onReady} />);
-  expect(view.getByTestId('pptx-peerless-editor')).toBeTruthy();
+  expect(await view.findByTestId('pptx-peerless-editor')).toBeTruthy();
   expect(opener).toHaveBeenCalledTimes(2);
   expect(owner.dispose).toHaveBeenCalledTimes(1);
   expect(next.dispose).not.toHaveBeenCalled();

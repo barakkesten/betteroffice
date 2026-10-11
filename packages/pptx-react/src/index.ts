@@ -1,4 +1,4 @@
-export { PptxEditor } from './PptxEditor';
+export { PptxEditor, PptxWorkerEditorChunkLoadError } from './PptxEditor';
 export type { PptxAsyncEditorApi, PptxPeerlessEditorAccess } from './worker/createPeerlessEditorApi';
 export { PptxAsyncEditorUnavailableError } from './worker/PptxAsyncEditorUnavailableError';
 export type { PptxWorkerEditorApi } from './worker/createWorkerEditorApi';
