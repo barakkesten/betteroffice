@@ -221,6 +221,161 @@ describe('command host', () => {
     expect(s.version).toBe(13);
   });
 
+  it('returns duplicate for a pruned outcome when prunedDuplicateReason is absent', async () => {
+    const s = model({ retainedOutcomes: 1 });
+    await edit(s.host, envelope(1));
+    await edit(s.host, envelope(2));
+    const duplicate = await edit(s.host, envelope(1));
+    expect(duplicate.outcomes).toEqual([{ seq: 1, status: 'duplicate' }]);
+    expect(duplicate.throughSeq).toBe(2);
+    expect(duplicate.frame?.coversThroughSeq).toBe(2);
+    expect(s.calls).toEqual([1, 2]);
+  });
+
+  it('refuses pruned duplicates with a frame without changing the watermark, cached outcomes, or dependencies', async () => {
+    const s = model({ retainedOutcomes: 1, prunedDuplicateReason: 'stale-basis' });
+    await edit(s.host, envelope(1));
+    const second = await edit(s.host, envelope(2));
+    expect(second.outcomes).toEqual([{ seq: 2, status: 'applied' }]);
+    const pruned = await edit(s.host, envelope(1));
+    expect(pruned.outcomes).toEqual([
+      { seq: 1, status: 'refused', reason: 'stale-basis', committed: false },
+    ]);
+    expect(pruned.throughSeq).toBe(2);
+    expect(pruned.version).toBe(12);
+    expect(pruned.frame).toEqual({ coversThroughSeq: 2, revision: 12, payload: new Uint8Array([12]) });
+    expect((await edit(s.host, envelope(2))).outcomes).toEqual(second.outcomes);
+    const third = await edit(s.host, envelope(3, { afterSeq: 1 }));
+    expect(third.outcomes).toEqual([{ seq: 3, status: 'applied' }]);
+    expect(third.throughSeq).toBe(3);
+    expect(third.version).toBe(13);
+    expect(s.calls).toEqual([1, 2, 3]);
+  });
+
+  it('rejects empty or non-string prunedDuplicateReason at construction', () => {
+    for (const reason of ['', 7]) {
+      let calls = 0;
+      expect(() => model({
+        prunedDuplicateReason: reason as string,
+        apply() { calls += 1; return { status: 'noop' }; },
+      })).toThrow(TypeError);
+      expect(calls).toBe(0);
+    }
+  });
+
+  it('acknowledges non-committing applied state without a version bump and admits its dependent', async () => {
+    let version = 10;
+    const calls: number[] = [];
+    const s = model({
+      getVersion: () => version,
+      apply(command) {
+        calls.push(command.seq);
+        if (command.seq === 1) {
+          return { status: 'applied', committed: false, selection: 'selected', editState: true };
+        }
+        version += 1;
+        return { status: 'applied' };
+      },
+    });
+    const first = await edit(s.host, envelope(1));
+    expect(first.outcomes).toEqual([{ seq: 1, status: 'applied', committed: false }]);
+    expect(first.throughSeq).toBe(1);
+    expect(first.version).toBe(10);
+    expect(first.selection).toBe('selected');
+    expect(first.editState).toBe(true);
+    const dependent = await edit(s.host, envelope(2, { afterSeq: 1 }));
+    expect(dependent.outcomes).toEqual([{ seq: 2, status: 'applied' }]);
+    expect(dependent.throughSeq).toBe(2);
+    expect(dependent.version).toBe(11);
+    expect(calls).toEqual([1, 2]);
+  });
+
+  it('poisons non-committing applied with a version bump and plain applied without a bump', async () => {
+    for (const nonCommitting of [false, true]) {
+      let version = 10;
+      let calls = 0;
+      const s = model({
+        getVersion: () => version,
+        apply() {
+          calls += 1;
+          if (nonCommitting) {
+            version += 1;
+            return { status: 'applied', committed: false };
+          }
+          return { status: 'applied' };
+        },
+      });
+      const error = await edit(s.host, envelope(1)).catch((error: unknown) => error);
+      expect(isCommandOutcomeUnknownError(error)).toBe(true);
+      if (!isCommandOutcomeUnknownError(error)) throw new Error('Missing unknown-outcome error');
+      expect(error.name).toBe(COMMAND_OUTCOME_UNKNOWN);
+      expect(error.refusal).toEqual({ seq: 1 });
+      expect(error.message).toContain('violated the command version contract');
+      expect(await edit(s.host, envelope(2)).catch((error: unknown) => error)).toBe(error);
+      expect(await s.host.checkpoint(null).catch((error: unknown) => error)).toBe(error);
+      expect(calls).toBe(1);
+      expect(s.frames).toEqual([]);
+    }
+  });
+
+  it('acknowledges cancelled state with or without a reason and cancels its dependent', async () => {
+    for (const reason of [undefined, 'empty-composition']) {
+      let calls = 0;
+      const s = model({
+        apply() {
+          calls += 1;
+          return { status: 'cancelled', ...(reason === undefined ? {} : { reason }), selection: 'selected', editState: false };
+        },
+      });
+      const cancelled = await edit(s.host, envelope(1));
+      expect(cancelled.outcomes).toEqual([
+        { seq: 1, status: 'cancelled', committed: false, ...(reason === undefined ? {} : { reason }) },
+      ]);
+      expect(cancelled.throughSeq).toBe(1);
+      expect(cancelled.version).toBe(10);
+      expect(cancelled.selection).toBe('selected');
+      expect(cancelled.editState).toBe(false);
+      const dependent = await edit(s.host, envelope(2, { afterSeq: 1 }));
+      expect(dependent.outcomes).toEqual([
+        { seq: 2, status: 'cancelled', reason: 'dependency-refused', committed: false },
+      ]);
+      expect(dependent.throughSeq).toBe(2);
+      expect(dependent.version).toBe(10);
+      expect(calls).toBe(1);
+    }
+  });
+
+  it('poisons cancelled results with a version bump or a non-string reason after a valid cancellation', async () => {
+    for (const bump of [true, false]) {
+      let version = 10;
+      const calls: number[] = [];
+      const s = model({
+        getVersion: () => version,
+        apply(command) {
+          calls.push(command.seq);
+          if (command.seq === 1) return { status: 'cancelled' };
+          if (bump) {
+            version += 1;
+            return { status: 'cancelled' };
+          }
+          return { status: 'cancelled', reason: 7 as unknown as string };
+        },
+      });
+      const valid = await edit(s.host, envelope(1));
+      expect(valid.outcomes).toEqual([{ seq: 1, status: 'cancelled', committed: false }]);
+      const error = await edit(s.host, envelope(2)).catch((error: unknown) => error);
+      expect(isCommandOutcomeUnknownError(error)).toBe(true);
+      if (!isCommandOutcomeUnknownError(error)) throw new Error('Missing unknown-outcome error');
+      expect(error.name).toBe(COMMAND_OUTCOME_UNKNOWN);
+      expect(error.refusal).toEqual({ seq: 2 });
+      expect(error.message).toContain(bump ? 'violated the command version contract' : 'Invalid format apply result');
+      expect(await edit(s.host, envelope(3)).catch((error: unknown) => error)).toBe(error);
+      expect(await s.host.checkpoint(null).catch((error: unknown) => error)).toBe(error);
+      expect(calls).toEqual([1, 2]);
+      expect(s.frames).toEqual([1]);
+    }
+  });
+
   it('maps applied/noop/refused/cancelled outcomes to throughSeq and worker version', async () => {
     const s = model();
     for (const [seq, kind, afterSeq, status, version] of [

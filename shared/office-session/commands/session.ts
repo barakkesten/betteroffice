@@ -74,6 +74,10 @@ function blocked(outcome: TicketOutcome | undefined): boolean {
   return outcome?.status === 'refused' || outcome?.status === 'cancelled';
 }
 
+function isCommittedApplied(outcome: TicketOutcome | undefined): boolean {
+  return outcome?.status === 'applied' && outcome.committed !== false;
+}
+
 function limit(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
@@ -274,9 +278,9 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     const previous = entry.outcome;
     const group = entry.group;
     if (!previous) unknownCount -= 1;
-    if (previous?.status === 'applied') appliedCount -= 1;
+    if (isCommittedApplied(previous)) appliedCount -= 1;
     entry.outcome = outcome;
-    if (outcome.status === 'applied') appliedCount += 1;
+    if (isCommittedApplied(outcome)) appliedCount += 1;
     inFlight.delete(outcome.seq);
     if (blocked(outcome)) blockSequence(outcome.seq);
     group.outcome = outcome;
@@ -325,7 +329,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
       if (!entry || blocked(entry.outcome)) continue;
       blockSequence(entry.envelope.seq);
       if (!entry.outcome) unknownCount -= 1;
-      if (entry.outcome?.status === 'applied') appliedCount -= 1;
+      if (isCommittedApplied(entry.outcome)) appliedCount -= 1;
       entry.outcome = { seq: entry.envelope.seq, status: 'cancelled', reason: 'dependency-refused' };
       inFlight.delete(entry.envelope.seq);
       if (recovering) diverged.add(entry.envelope.seq);
@@ -571,7 +575,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
           source: cloneData(source!), checkpoint: retainedCheckpoint,
           session: sessionId, incarnation, epoch,
           refusedSeqs: blockedSeqs.values(),
-          replayAppliedSeqs: [...log.values()].filter((entry) => entry.outcome?.status === 'applied').map((entry) => entry.envelope.seq),
+          replayAppliedSeqs: [...log.values()].filter((entry) => isCommittedApplied(entry.outcome)).map((entry) => entry.envelope.seq),
         });
         if (disposed || terminal) {
           try { await next.client.dispose(); } catch {}
@@ -773,7 +777,7 @@ export function createWorkerEditSession<O, P, S, E, F, X>(
     for (const [seq, entry] of log) {
       if (seq > throughSeq) break;
       if (knownPrefix && (!entry.outcome || !entry.rpcSettled)) break;
-      if (entry.outcome?.status === 'applied') appliedCount -= 1;
+      if (isCommittedApplied(entry.outcome)) appliedCount -= 1;
       retainedBytes -= entry.bytes;
       const afterSeq = entry.envelope.afterSeq;
       if (afterSeq !== undefined) {

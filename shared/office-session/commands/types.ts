@@ -184,9 +184,11 @@ export type ApplyContext = {
   replayPreviouslyApplied: boolean;
 };
 
-/** @internal Format apply result; noop and refusal must preserve the version. */
+/** @internal Format apply result; noop, refusal, cancellation, and applied with committed: false must preserve the version. */
 export type ApplyResult<S, E> =
-  | { status: 'applied' | 'noop'; selection?: S; editState?: E }
+  | { status: 'applied'; committed?: false; selection?: S; editState?: E }
+  | { status: 'noop'; selection?: S; editState?: E }
+  | { status: 'cancelled'; reason?: string; selection?: S; editState?: E }
   | {
     status: 'refused';
     reason: string;
@@ -202,6 +204,8 @@ export type CommandHostOptions<P, S, E, F> = {
   epoch: number;
   throughSeq?: number;
   retainedOutcomes?: number;
+  /** @internal Refuses pruned duplicates with this reason; absent preserves duplicate outcomes. */
+  prunedDuplicateReason?: string;
   refusedSeqs?: readonly number[];
   replayAppliedSeqs?: readonly number[];
   selectionEquals?(previous: S | undefined, next: S | undefined): boolean;

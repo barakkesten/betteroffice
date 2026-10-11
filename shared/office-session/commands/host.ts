@@ -134,11 +134,13 @@ export function createCommandHost<P, S, E, F>(
   options: CommandHostOptions<P, S, E, F>
 ): CommandHost<P, S, E, F> {
   const retainedLimit = options.retainedOutcomes ?? 256;
-  const { session, incarnation, epoch, getVersion, apply, frame, snapshot } = options;
+  const { session, incarnation, epoch, getVersion, apply, frame, snapshot, prunedDuplicateReason } = options;
   let throughSeq = options.throughSeq ?? 0;
   let version = getVersion();
   if (!Number.isSafeInteger(retainedLimit) || retainedLimit < 0 ||
-    !Number.isSafeInteger(throughSeq) || throughSeq < 0 || !Number.isFinite(version)) {
+    !Number.isSafeInteger(throughSeq) || throughSeq < 0 || !Number.isFinite(version) ||
+    (prunedDuplicateReason !== undefined &&
+      (typeof prunedDuplicateReason !== 'string' || prunedDuplicateReason.length === 0))) {
     throw new TypeError('Invalid command host ledger');
   }
   const outcomes = new Map<number, CommandOutcome>();
@@ -302,7 +304,9 @@ export function createCommandHost<P, S, E, F>(
       return ack(command.seq > throughSeq ? settle(outcome) : outcome);
     }
     if (command.seq <= throughSeq) {
-      return withFrame(ack(outcomes.get(command.seq) ?? { seq: command.seq, status: 'duplicate' }));
+      return withFrame(ack(outcomes.get(command.seq) ?? (prunedDuplicateReason === undefined
+        ? { seq: command.seq, status: 'duplicate' }
+        : refusal(command.seq, prunedDuplicateReason))));
     }
     if (refused.contains(command.seq)) return withFrame(ack(settle(refusal(command.seq, 'unknown-outcome'))));
     if (command.afterSeq !== undefined && refused.contains(command.afterSeq)) {
@@ -318,12 +322,17 @@ export function createCommandHost<P, S, E, F>(
       result = await apply(command, {
         basis: command.basis, currentVersion: before, replayPreviouslyApplied,
       });
-      const after = getVersion();
-      if (!Number.isFinite(after) || (result.status === 'applied' ? after <= before : after !== before)) {
-        throw new Error(`${result.status} violated the command version contract`);
-      }
-      if (result.status !== 'applied' && result.status !== 'noop' && result.status !== 'refused') {
+      if (!result || typeof result !== 'object' ||
+        (result.status !== 'applied' && result.status !== 'noop' &&
+          result.status !== 'cancelled' && result.status !== 'refused') ||
+        (result.status === 'applied' && result.committed !== undefined && result.committed !== false) ||
+        (result.status === 'cancelled' && result.reason !== undefined && typeof result.reason !== 'string')) {
         throw new Error('Invalid format apply result');
+      }
+      const after = getVersion();
+      if (!Number.isFinite(after) ||
+        (result.status === 'applied' && result.committed !== false ? after <= before : after !== before)) {
+        throw new Error(`${result.status} violated the command version contract`);
       }
       version = after;
     } catch (error) {
@@ -332,7 +341,11 @@ export function createCommandHost<P, S, E, F>(
     }
     const outcome: CommandOutcome = result.status === 'refused'
       ? { ...refusal(command.seq, result.reason), ...(result.affectedSeqs === undefined ? {} : { affectedSeqs: result.affectedSeqs }) }
-      : { seq: command.seq, status: result.status };
+      : result.status === 'cancelled'
+        ? { seq: command.seq, status: 'cancelled', committed: false, ...(result.reason === undefined ? {} : { reason: result.reason }) }
+        : result.status === 'applied' && result.committed === false
+          ? { seq: command.seq, status: 'applied', committed: false }
+          : { seq: command.seq, status: result.status };
     return withFrame(ack(settle(outcome), result));
   }
 

@@ -820,6 +820,44 @@ describe('worker edit recovery', () => {
     }
   });
 
+  it('excludes non-committing applied outcomes from checkpoint counts and replayAppliedSeqs with recovery enabled', async () => {
+    const samples: Array<{ applied: number; bytes: number }> = [];
+    const h = harness({
+      maxRecoveryAttempts: 2, maxInFlight: 1, commandBytes: () => 7,
+      checkpointPolicy(stats) { samples.push(stats); return stats.applied >= 3; },
+    });
+    for (let index = 0; index < 3; index += 1) {
+      const ticket = h.session.submit('select', 'selected');
+      h.pump();
+      h.first.ack(index, { version: 0, outcomes: [{ seq: index + 1, status: 'applied', committed: false }] });
+      expect(await ticket.ack).toEqual({ seq: index + 1, status: 'applied', committed: false });
+    }
+    h.pump();
+    expect(samples[samples.length - 1]).toEqual({ applied: 0, bytes: 21 });
+    expect(h.first.checkpoints).toHaveLength(0);
+    h.first.fail();
+    await turns();
+    expect(h.reopens).toHaveLength(1);
+    expect(h.reopens[0]!.input.checkpoint).toBeUndefined();
+    expect(h.reopens[0]!.input.replayAppliedSeqs).toEqual([]);
+    expect(h.reopens[0]!.input.refusedSeqs).toEqual([]);
+    const next = h.reopen(0);
+    await turns();
+    for (let index = 0; index < 3; index += 1) {
+      expect(next.edits[index]!.envelope).toMatchObject({ seq: index + 1, replay: true });
+      next.ack(index, {
+        version: 0, outcomes: [{ seq: index + 1, status: 'applied', committed: false }],
+        frame: { coversThroughSeq: index + 1, revision: index + 1, payload: 'selected' },
+      });
+      await turns();
+    }
+    h.pump();
+    expect(samples[samples.length - 1]).toEqual({ applied: 0, bytes: 21 });
+    expect(next.checkpoints).toHaveLength(0);
+    expect(h.events.filter((event) => event.phase === 'recovered')).toHaveLength(1);
+    await h.session.dispose();
+  });
+
   it('drains in-flight edits and waits for individual outcomes before checkpointing', async () => {
     const h = harness({ checkpointPolicy: () => true, maxInFlight: 2 });
     const first = h.session.submit('insert', 'a');
