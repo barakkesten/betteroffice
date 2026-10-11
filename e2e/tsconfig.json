@@ -3,6 +3,11 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "paths": {
+      "@betteroffice/pptx": ["../packages/pptx/src/index.ts"],
+      "@betteroffice/pptx/peerless": ["../packages/pptx/src/peerless.ts"],
+      "@betteroffice/pptx/editor": ["../packages/pptx/src/editor.ts"]
+    },
     "lib": [
       "ES2022",
       "DOM",
