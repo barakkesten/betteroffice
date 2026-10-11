@@ -1,10 +1,10 @@
-import type { PptxEditorProps } from '../PptxEditor';
+import type { PEERLESS_FLAG, PptxEditorProps } from '../PptxEditor';
 import { PptxEditorContent } from '../PptxEditor';
 import type { PptxWorkerEditorApi } from './createWorkerEditorApi';
 import { useEditableSessionPresentation } from './useEditableSessionPresentation';
 
 /** @experimental */
-export type PptxWorkerEditorProps = Omit<PptxEditorProps, 'onReady' | 'readOnly'> & {
+export type PptxWorkerEditorProps = Omit<PptxEditorProps, 'onReady' | 'readOnly' | typeof PEERLESS_FLAG> & {
   experimentalWorkerOpen: true;
   readOnly?: false;
   onReady?: (api: PptxWorkerEditorApi) => void;

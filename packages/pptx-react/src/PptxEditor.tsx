@@ -141,8 +141,12 @@ import { createWorkerEditorApi, type PptxWorkerEditorApi } from './worker/create
 import type { EditablePresentation } from './worker/useEditableSessionPresentation';
 import { createWorkerInputCoordinator, type WorkerInputCoordinator } from './commands/workerInputCoordinator';
 import { currentContext, frameImages } from './viewer/sessionPaint';
+import { PeerlessPptxSurface } from './worker/PeerlessPptxSurface';
+import type { PptxAsyncEditorApi } from './worker/createPeerlessEditorApi';
+import { PptxAsyncEditorUnavailableError } from './worker/PptxAsyncEditorUnavailableError';
 
 const THUMBNAIL_SLICE_MS = 12;
+export const PEERLESS_FLAG = 'asyncApi' as const;
 
 export interface PptxTextSelection {
   shapeId: string;
@@ -219,6 +223,10 @@ export interface PptxWorkerViewerApi extends Omit<
   goToSlideAsync: (slide: number) => Promise<boolean>;
 }
 
+export interface PptxAsyncCollaborationOptions extends Omit<PptxEditorCollaborationOptions, 'onReplica'> {
+  onReplica?: (replica: import('@betteroffice/pptx').AsyncCollaborationReplica | null) => void;
+}
+
 export interface PptxEditorCollaborationOptions {
   clientId: number;
   initialUpdate?: Uint8Array;
@@ -227,6 +235,8 @@ export interface PptxEditorCollaborationOptions {
 }
 
 export interface PptxEditorProps extends PptxEditorPluginProps {
+  /** @internal */
+  [PEERLESS_FLAG]?: false;
   file?: Uint8Array;
   /** Font faces; equivalent inline arrays do not reopen the presentation. */
   fonts: ReadonlyArray<PptxFontFace>;
@@ -266,6 +276,14 @@ export type PptxWorkerViewerProps = Omit<
   /** @experimental Opt-in worker opening currently applies to read-only editors. */
   experimentalWorkerOpen: true;
   onReady?: (api: PptxWorkerViewerApi) => void;
+};
+
+export type PptxAsyncEditorProps = Omit<PptxWorkerEditorProps, 'onReady' | 'readOnly' | 'collaboration' | 'experimentalWorkerOpen'> & {
+  [PEERLESS_FLAG]: true;
+  experimentalWorkerOpen?: true;
+  readOnly?: boolean;
+  collaboration?: PptxAsyncCollaborationOptions;
+  onReady?: (api: PptxAsyncEditorApi) => void | (() => void);
 };
 
 interface PictureOrigin {
@@ -489,19 +507,50 @@ type WorkerSessionProps = Omit<PptxWorkerEditorProps, 'readOnly' | 'onReady'> & 
   onReady?: (api: PptxWorkerEditorApi | PptxWorkerViewerApi) => void;
 };
 
-export function PptxEditor(props: PptxWorkerEditorProps): JSX.Element;
+export function PptxEditor(props: PptxAsyncEditorProps): JSX.Element;
+export function PptxEditor(props: PptxWorkerEditorProps & { [PEERLESS_FLAG]?: false }): JSX.Element;
 export function PptxEditor(props: PptxWorkerViewerProps): JSX.Element;
-export function PptxEditor(props: WorkerSessionProps): JSX.Element;
+export function PptxEditor(props: WorkerSessionProps & { [PEERLESS_FLAG]?: false }): JSX.Element;
 export function PptxEditor(props: PptxEditorProps): JSX.Element;
 export function PptxEditor({
   i18n,
   ...props
-}: PptxWorkerEditorProps | PptxWorkerViewerProps | WorkerSessionProps | PptxEditorProps): JSX.Element {
+}: PptxAsyncEditorProps | PptxWorkerEditorProps | PptxWorkerViewerProps | WorkerSessionProps | PptxEditorProps): JSX.Element {
   return (
     <LocaleProvider i18n={i18n}>
-      <PptxEditorSession {...props} i18n={i18n} />
+      {PEERLESS_FLAG in props && props[PEERLESS_FLAG] ? (
+        <PptxAsyncEditorSession {...props as PptxAsyncEditorProps} i18n={i18n} />
+      ) : (
+        <PptxEditorSession {...props as PptxWorkerEditorProps | PptxWorkerViewerProps | WorkerSessionProps | PptxEditorProps} i18n={i18n} />
+      )}
     </LocaleProvider>
   );
+}
+
+function PptxAsyncEditorSession(props: PptxAsyncEditorProps) {
+  const [workerAvailable] = useState(() => typeof Worker === 'function');
+  const reason = (props as { experimentalWorkerOpen?: boolean }).experimentalWorkerOpen === false ? 'worker-open-disabled'
+    : !workerAvailable ? 'no-worker' : null;
+  const error = useMemo(() => {
+    if (reason === 'worker-open-disabled') {
+      return new PptxAsyncEditorUnavailableError('The async presentation editor requires experimentalWorkerOpen to be enabled');
+    }
+    if (reason === 'no-worker') return new PptxAsyncEditorUnavailableError('The async presentation editor requires Worker support');
+    return null;
+  }, [reason]);
+  const onError = useRef(props.onError);
+  onError.current = props.onError;
+  const reported = useRef(new Set<NonNullable<typeof reason>>());
+  useEffect(() => {
+    if (reason === null) {
+      reported.current.clear();
+      return;
+    }
+    if (reported.current.has(reason)) return;
+    reported.current.add(reason);
+    if (error) onError.current?.(error);
+  }, [error, reason]);
+  return error ? <div className={props.className} role="alert">{error.message}</div> : <PeerlessPptxSurface {...props} />;
 }
 
 function PptxEditorSession(props: PptxWorkerEditorProps | PptxWorkerViewerProps | WorkerSessionProps | PptxEditorProps) {
