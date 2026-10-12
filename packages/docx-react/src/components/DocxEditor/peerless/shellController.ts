@@ -10,7 +10,7 @@ import type { PeerlessEditSessionBinding } from '../hooks/usePeerlessEditSession
 import type { PeerlessViewSnapshot } from './viewStore';
 import { readWorkerSelection } from './clipboard';
 import type { PeerlessInputIntent } from './inputEvents';
-import type { PeerlessAdmissionResult } from './inputAdmission';
+import { flushAdmittedInput, type PeerlessAdmissionResult } from './inputAdmission';
 import type { DocxHostSearch } from '../hooks/useHostSearch';
 import type { SelectionState } from '../types';
 import { yrsSelectionState } from '../hooks/useSelectionTracker';
@@ -95,8 +95,7 @@ export function createPeerlessShellController(initial: Options) {
   };
   const flush = async () => {
     const current = ready();
-    await current.admission.whenCompositionSettled?.();
-    await current.session.flush();
+    await flushAdmittedInput(current);
     if (current !== binding) throw new Error('Document was replaced');
     return current;
   };
@@ -188,7 +187,7 @@ export function createPeerlessShellController(initial: Options) {
     readSelectionInfo: async () => {
       const current = await flush();
       const result = await readWorkerSelection({ binding: current, isCurrent: () => binding === current,
-        read: (request) => read({ kind: 'readParagraphs', request }), identities: () => read({ kind: 'paragraphIdentities' }) });
+        readSelection: (selection) => read({ kind: 'rawSelectionInfo', selection }) });
       return result?.info ?? null;
     },
     findParagraphs: (query, config) => read({ kind: 'findParagraphs', query, ...config }),

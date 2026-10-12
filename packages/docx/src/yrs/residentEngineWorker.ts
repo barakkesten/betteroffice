@@ -600,6 +600,12 @@ function bindResidentCommands(init: ResidentCommandInitRequest): ResidentCommand
           },
         }).finally(() => { for (const image of images.values()) image.close(); });
         for (const page of stagedPages) pendingOffscreenPageIds.delete(page.pageId);
+        const selected = hooks.selection();
+        const selectionRects = selected && (selected.anchor.story !== selected.focus.story ||
+          selected.anchor.paraId !== selected.focus.paraId || selected.anchor.offset !== selected.focus.offset)
+          ? (await readResidentRangeHighlights(engine, layout.frame, [{
+            story: selected.anchor.story, start: selected.anchor, end: selected.focus,
+          }], layoutRevision)).rects[0] ?? [] : [];
         const built = buildCommandFrame({
           frame: finalized.bytes,
           metadata: first
@@ -607,6 +613,7 @@ function bindResidentCommands(init: ResidentCommandInitRequest): ResidentCommand
             : finalized.delta,
           pageFrames: preceding, coversThroughSeq, caret: finalized.caret,
           layoutRevision, documentVersion: engine.proposalEngine.version(),
+          selectionRects,
           echoContext, stagedPresentation: presentation.value,
         });
         revision = built.value.revision;
@@ -1422,6 +1429,12 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
     }
     let value: unknown;
     switch (request.read.kind) {
+      case 'rawSelectionInfo': {
+        const { anchor, focus } = request.read.selection;
+        if (anchor.story !== focus.story) throw new Error('Cross-story selection is unavailable');
+        value = session.selectionText({ story: anchor.story, start: anchor, end: focus });
+        break;
+      }
       case 'exportStructuredWithPages':
         value = session.exportStructuredWithPagesJson(request.read.options, request.read.currentRequest);
         break;

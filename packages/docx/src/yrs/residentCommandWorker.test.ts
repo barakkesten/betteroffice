@@ -114,6 +114,40 @@ function frameText(frame: RetainedFrame): string {
     .map((primitive) => primitive.kind === 'glyphRun' || primitive.kind === 'text' ? primitive.text : '').join('');
 }
 
+test('worker frames include highlights for keyboard and point range selections', async () => {
+  const { client, point } = await openWorker();
+  try {
+    const selected = await client.edit(intent(1, 0, 'select', {
+      selection: { anchor: { ...point, offset: 0 }, focus: point },
+    }));
+    expect(selected.frame!.payload.selectionRects?.length).toBeGreaterThan(0);
+    const rect = selected.frame!.payload.selectionRects![0]!;
+    const collapsed = await client.edit(intent(2, 0, 'navigate', { unit: 'character', direction: 'forward', extend: false }));
+    expect(collapsed.frame!.payload.selectionRects).toEqual([]);
+    const keyboard = await client.edit(intent(3, 0, 'navigate', { unit: 'character', direction: 'backward', extend: true }));
+    expect(keyboard.frame!.payload.selectionRects?.length).toBeGreaterThan(0);
+    const pointer = await client.edit(intent(4, 0, 'extendSelection', {
+      page: { pageId: '1', pageIndex: rect.pageIndex }, x: rect.x, y: rect.y + rect.height / 2,
+      layoutRevision: keyboard.frame!.payload.layoutRevision, frameEpoch: keyboard.frame!.revision, clickCount: 1,
+      modifiers: { shift: true, alt: false, ctrl: false, meta: false },
+    }));
+    expect(pointer.frame!.payload.selectionRects?.length).toBeGreaterThan(0);
+  } finally { client.destroy(); }
+}, TIMEOUT);
+
+test('worker selection reads project tracked deletions before slicing raw offsets', async () => {
+  const { client, point } = await openWorker({ bodyXml:
+    '<w:p w14:paraId="00000001"><w:del w:id="1" w:author="Writer" w:date="2026-01-01T00:00:00Z">' +
+    '<w:r><w:delText>XX</w:delText></w:r></w:del><w:r><w:t>abc</w:t></w:r></w:p>',
+  });
+  try {
+    const result = await client.documentRead({ kind: 'rawSelectionInfo', selection: {
+      anchor: { ...point, offset: 2 }, focus: { ...point, offset: 3 },
+    } });
+    expect(result.value).toMatchObject({ selectedText: 'a', before: '', after: 'bc', paragraphText: 'abc' });
+  } finally { client.destroy(); }
+}, TIMEOUT);
+
 test('render environment commands change hidden text and theme colors without editing the document', async () => {
   const { client, engine, initial } = await openWorker({ bodyXml:
     '<w:p w14:paraId="00000001"><w:r><w:t>Seed</w:t></w:r>' +

@@ -8,6 +8,7 @@ import type {
   DocxCommandAck,
   DocxCommandEnvelope,
   DocxCommandFrame,
+  DocxCommandSelection,
   ResidentCommandInitReply,
   ResidentCommandInitRequest,
   ResidentCommandViewportRequest,
@@ -18,6 +19,7 @@ import type {
   YrsResidentCaretSnapshot,
   YrsResidentWorkerSnapshot,
   YrsSelection,
+  YrsSelectionText,
   YrsStickyPosition,
 } from './index';
 import type { PointPosition } from '../plugin-api';
@@ -95,6 +97,7 @@ export type ResidentDocumentRead =
   | { kind: 'paragraphIdentities' }
   | { kind: 'resolveParagraphAnchors'; anchors: DocxParagraphAnchor[] }
   | { kind: 'readParagraphs'; request: DocxReadParagraphsRequest }
+  | { kind: 'rawSelectionInfo'; selection: DocxCommandSelection }
   | { kind: 'findText'; request: DocxFindTextRequest }
   | { kind: 'findMatches'; searchText: string; options: FindOptions; expectVersion: string }
   | { kind: 'searchText'; query: string; caseSensitive: boolean; carry?: YrsStickyPosition | null }
@@ -128,6 +131,7 @@ export interface ResidentDocumentReadValues {
   paragraphIdentities: DocxParagraphIdentitySnapshot;
   resolveParagraphAnchors: { results: DocxParagraphAnchorResult[] };
   readParagraphs: DocxReadParagraphsResult;
+  rawSelectionInfo: YrsSelectionText;
   findText: DocxFindTextResult;
   findMatches: DocxFindDisplayMatch[] | null;
   navigationTarget: ReturnType<typeof resolveNavigationTarget>;

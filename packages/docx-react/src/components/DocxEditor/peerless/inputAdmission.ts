@@ -71,6 +71,15 @@ export interface PeerlessInputAdmissionOptions {
   echoPainter: PeerlessEchoPainter;
 }
 
+export async function flushAdmittedInput(binding: {
+  admission?: PeerlessInputAdmission;
+  session: Pick<DocxWorkerEditSession<PeerlessEchoIntent>, 'flush'>;
+}): Promise<void> {
+  await binding.admission?.whenCompositionSettled?.();
+  await binding.admission?.getSnapshot?.().tail?.ack;
+  await binding.session.flush();
+}
+
 /** @internal */
 export function createInputAdmission(_options: PeerlessInputAdmissionOptions): PeerlessInputAdmission {
   const { session, viewStore, echoPainter } = _options;

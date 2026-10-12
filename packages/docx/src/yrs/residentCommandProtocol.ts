@@ -1,4 +1,5 @@
 import type { DocxTextRange } from './edits';
+import type { DisplayListRect } from '../layout/render/displayListQueries';
 import type {
   ApplyContext,
   ApplyResult,
@@ -227,6 +228,7 @@ export interface DocxCommandFramePayload {
   pageFrames?: ArrayBuffer[];
   caret: YrsResidentCaretSnapshot;
   layoutRevision: number;
+  selectionRects?: DisplayListRect[];
   documentVersion?: string;
   layoutMeta?: LayoutMetaV1;
   layoutProvisional?: boolean;

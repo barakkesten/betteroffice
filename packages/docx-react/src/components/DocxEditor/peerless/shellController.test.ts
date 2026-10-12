@@ -3,6 +3,11 @@ import { createPeerlessShellController, LEGACY_SYNC_API_PROP } from './shellCont
 import { createPeerlessViewStore } from './viewStore';
 import type { PeerlessEditSessionBinding } from '../hooks/usePeerlessEditSession';
 import { PLAIN_CONTEXT } from '../../../commands/testing';
+import { admitIntent, createInputAdmission } from './inputAdmission';
+import type { DocxWorkerEditSession } from '@betteroffice/docx/peerless';
+import type { PeerlessEchoIntent, PeerlessEchoPainter } from './echoPainter';
+import type { CommandTicket } from '../../../../../../shared/office-session/commands/types';
+import { normalizeInputEvent } from './inputEvents';
 
 function fixture() {
   const viewStore = createPeerlessViewStore({
@@ -17,6 +22,51 @@ function fixture() {
   const controller = createPeerlessShellController({ read: read as never, focus() {}, zoom: 1 });
   return { controller, binding, viewStore, flush, read };
 }
+
+test('save includes navigation and typing deferred behind the first acknowledgement', async () => {
+  const { controller, binding, viewStore } = fixture();
+  const order: string[] = [];
+  const tickets: CommandTicket[] = [];
+  let release!: () => void;
+  let text = '';
+  const session = {
+    state: { epoch: 1, version: 0, throughSeq: 0, presentedThroughSeq: 0, selection: null, editState: undefined },
+    submit(kind, payload, options) {
+      const seq = tickets.length + 1;
+      const ack = (seq === 1 ? new Promise<void>((resolve) => { release = resolve; }) : Promise.resolve()).then(() => {
+        order.push(kind);
+        if (kind === 'insertText') text += (payload as { text: string }).text;
+        session.state.throughSeq = seq;
+        viewStore.installFrameGeometry({ identity: viewStore.getSnapshot().identity, coversThroughSeq: seq,
+          frameEpoch: seq, layoutRevision: seq, pages: [], caret: { x: 12, y: 10, width: 1, height: 20 }, selectionRects: [] });
+        return { status: 'applied' as const, seq };
+      });
+      if (options?.after) expect(options.after.seq).toBe(seq - 1);
+      const ticket = { id: seq, seq, ack, presented: Promise.resolve('presented' as const) };
+      tickets.push(ticket);
+      return ticket;
+    },
+    flush: async () => { await Promise.all(tickets.map((ticket) => ticket.ack)); },
+  } satisfies Pick<DocxWorkerEditSession<PeerlessEchoIntent>, 'state' | 'submit' | 'flush'>;
+  binding.session = session as DocxWorkerEditSession<PeerlessEchoIntent>;
+  binding.admission = createInputAdmission({ session: binding.session, viewStore,
+    echoPainter: { disable() {}, preview: () => undefined } as unknown as PeerlessEchoPainter });
+  controller.update({ read: async () => ({} as never), focus() {}, zoom: 1,
+    save: async () => { order.push('save'); return new TextEncoder().encode(text).buffer; } });
+  controller.attach(binding);
+  admitIntent(binding.admission, { kind: 'insertText', payload: { text: 'x' } });
+  admitIntent(binding.admission, normalizeInputEvent({ eventId: 1, inputTime: 0,
+    source: 'keydown', key: 'ArrowUp', code: 'ArrowUp', shift: false, alt: false, ctrl: false, meta: false },
+    { composing: false, compositionId: null, lastHandledEventId: null, trailingCompositionText: null }).intents[0]!);
+  admitIntent(binding.admission, { kind: 'insertText', payload: { text: 'y' } });
+  expect(tickets).toHaveLength(1);
+  const saved = controller.ref.save();
+  await Promise.resolve();
+  release();
+  expect(new TextDecoder().decode((await saved)!)).toBe('xy');
+  expect(order).toEqual(['insertText', 'navigate', 'insertText', 'save']);
+  binding.admission.dispose();
+});
 
 test('worker state opens shell command gates without a legacy document or session', () => {
   const { controller, binding } = fixture();

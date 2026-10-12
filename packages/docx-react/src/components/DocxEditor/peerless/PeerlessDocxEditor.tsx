@@ -416,7 +416,9 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
         pages,
         caret: caret.caretRect ? { ...caret.caretRect,
           x: caret.caretRect.x + (pages[caret.caretRect.pageIndex]?.bounds.x ?? 0), y: caret.caretRect.y + (pages[caret.caretRect.pageIndex]?.bounds.y ?? 0), width: 1 } : null,
-        selectionRects: [],
+        selectionRects: (frame.payload.selectionRects ?? []).map(({ pageIndex, x, y, width, height }) => ({
+          x: x + (pages[pageIndex]?.bounds.x ?? 0), y: y + (pages[pageIndex]?.bounds.y ?? 0), width, height,
+        })),
       };
       retained.current = next;
       pageIndexes.current = new Map(next.pages.map(({ pageId, pageIndex }) => [pageId.toString(), pageIndex]));
@@ -435,8 +437,9 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
     if (!current) return;
     try {
       const copied = await copyWorkerSelection({ binding: current.binding, cut,
-        isCurrent: () => active.current === current, read: controller.ref.readParagraphs,
-        identities: controller.ref.getParagraphIdentities, write: (text) => navigator.clipboard.writeText(text) });
+        isCurrent: () => active.current === current,
+        readSelection: (selection) => controller.read({ kind: 'rawSelectionInfo', selection }),
+        write: (text) => navigator.clipboard.writeText(text) });
       if (copied) { if (cut) props.onCut?.(); else props.onCopy?.(); }
     } catch (error) { errorHandler.current?.(error instanceof Error ? error : new Error(String(error))); }
   }, [controller, props.onCopy, props.onCut]);

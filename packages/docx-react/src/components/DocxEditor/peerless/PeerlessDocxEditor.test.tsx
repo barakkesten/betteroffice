@@ -796,6 +796,15 @@ test('d8a_rejected_presentation_can_retry_prepared_frame', async () => {
   expect(options.prepareGeometry(commandFrame(4, 3))?.frameEpoch).toBe(4);
 });
 
+test('prepared geometry keeps worker selection rectangles for the page overlay', async () => {
+  render(<DocxEditor {...peerlessProps} />);
+  await waitFor(() => expect(binding).toBeDefined());
+  const frame = commandFrame(1);
+  Object.assign(frame.payload, { selectionRects: [{ pageIndex: 0, x: 12, y: 20, width: 30, height: 16 }] });
+  const options = surface.mock.calls[0][0].sessionOptions;
+  expect(options.prepareGeometry(frame)?.selectionRects).toEqual([{ x: 12, y: 20, width: 30, height: 16 }]);
+});
+
 test('d8a_flag_off_keeps_legacy_mount', async () => {
   const renderer = spyOn(display, 'useCanvasRenderer');
   restorers.push(() => renderer.mockRestore());
