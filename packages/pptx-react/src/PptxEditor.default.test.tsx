@@ -1,6 +1,8 @@
-import { expect, spyOn, test } from 'bun:test';
+import { expect, mock, spyOn, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { act, render, waitFor } from '@testing-library/react';
+import { useCallback, useState } from 'react';
+import type { AsyncCollaborationReplica } from '@betteroffice/pptx';
 import { open, story } from './worker/peerlessTestHarness';
 import * as wasm from '../../pptx/src/wasm/loader';
 import { workerEditorSessionOpener } from './worker/useEditableSessionPresentation';
@@ -21,10 +23,39 @@ test('default readiness uses one worker engine and no eager main-thread engine',
     expect(warn).not.toHaveBeenCalled();
     expect(() => Reflect.get(api, 'handle')).toThrow('handleAsync');
     expect(() => Reflect.get(api, 'save')()).toThrow('saveAsync');
+    expect(() => Reflect.get(api, 'handle')).toThrow('legacySyncApi');
+    expect(() => Reflect.get(api, 'save')()).toThrow('legacySyncApi');
     expect(await api.saveAsync()).toBeInstanceOf(Uint8Array);
     expect((await story(api)).paragraphs).not.toHaveLength(0);
   } finally { hybrid.mockRestore(); engines.mockRestore(); warn.mockRestore(); }
 });
+
+for (const operation of ['handle', 'save', 'host'] as const) {
+  test(`onReady ${operation} failures reach onError and the console once`, async () => {
+    const initial = await open();
+    initial.view.unmount();
+    const diagnostic = spyOn(console, 'error').mockImplementation(() => {});
+    const hostError = new Error('Host initialization failed');
+    const onError = mock((_error: Error) => { throw new Error('Host error handler failed'); });
+    const onReady = mock((api: PptxAsyncEditorApi) => {
+      if (operation === 'handle') Reflect.get(api, 'handle');
+      if (operation === 'save') Reflect.get(api, 'save')();
+      throw hostError;
+    });
+    const view = render(<PptxEditor fonts={[]} file={initial.bytes} onReady={onReady} onError={onError} />);
+    try {
+      await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+      const error = onError.mock.calls[0][0];
+      if (operation === 'host') expect(error).toBe(hostError);
+      else expect(error.message).toContain('legacySyncApi');
+      expect(diagnostic.mock.calls.filter((call) => call.includes(error))).toHaveLength(1);
+      await act(async () => { view.rerender(<PptxEditor fonts={[]} file={initial.bytes} onReady={onReady} onError={onError} />); });
+      expect(onReady).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+    } finally { view.unmount(); diagnostic.mockRestore(); }
+  });
+}
 
 test('initialSlide clamps on open and later changes preserve edits and the session', async () => {
   const opener = spyOn(peerlessSessionOpener, 'open');
@@ -46,6 +77,36 @@ test('initialSlide clamps on open and later changes preserve edits and the sessi
     expect(await api.version()).toBe(version);
     expect(JSON.stringify(await story(api))).toContain('kept ');
   } finally { opener.mockRestore(); }
+});
+
+test('a real editor keeps one collaboration session across replica publication and equivalent options', async () => {
+  const initial = await open();
+  initial.view.unmount();
+  const opener = spyOn(peerlessSessionOpener, 'open');
+  opener.mockClear();
+  const publications: (AsyncCollaborationReplica | null)[] = [];
+  function Host() {
+    const [replica, setReplica] = useState<AsyncCollaborationReplica | null>(null);
+    const publish = useCallback((value: AsyncCollaborationReplica | null) => {
+      publications.push(value);
+      if (publications.length < 7) setReplica(value);
+    }, []);
+    return <>
+      <output data-testid="replica">{replica ? 'published' : 'waiting'}</output>
+      <PptxEditor fonts={[]} file={initial.bytes} collaboration={{ clientId: 7, onReplica: publish }} />
+    </>;
+  }
+  const view = render(<Host />);
+  try {
+    await waitFor(() => expect(publications.some(Boolean)).toBe(true));
+    await act(async () => { view.rerender(<Host />); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(opener).toHaveBeenCalledTimes(1);
+    expect(view.getByTestId('replica').textContent).toBe('published');
+    expect(publications).toHaveLength(1);
+    expect(await publications[0]!.encodeStateVector()).toBeInstanceOf(Uint8Array);
+    view.unmount();
+    expect(publications).toEqual([expect.anything(), null]);
+  } finally { view.unmount(); opener.mockRestore(); }
 });
 
 for (const capability of ['Worker', 'OffscreenCanvas', 'experimentalWorkerOpen'] as const) {
