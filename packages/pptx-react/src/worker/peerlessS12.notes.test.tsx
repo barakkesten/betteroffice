@@ -1,12 +1,73 @@
 import { expect, mock, test } from 'bun:test';
 import type { DeckSnapshot, PresentationHandle } from '@betteroffice/pptx';
-import { open } from './peerlessTestHarness';
+import { open, replyControl, story, type } from './peerlessTestHarness';
 import * as wasm from '../../../pptx/src/wasm/loader';
 
 const { act, fireEvent, waitFor } = await import('@testing-library/react');
 
 type NotesAccess = { [K in 'setSlideNotes' | 'addComment' | 'replyToComment' | 'setCommentStatus' | 'setCommentPosition' | 'removeComment' | 'setCommentFlavor' | 'comments']:
   (...args: Parameters<PresentationHandle[K]>) => Promise<ReturnType<PresentationHandle[K]>> };
+
+test('notes drafts queue behind typing in input order', async () => {
+  const error = mock(() => {});
+  const value = await open({ onError: error });
+  const target = await story(value.api);
+  await act(async () => { await value.api.selectText({ slide: 1, shapeId: target.shapeId, storyId: target.storyId, start: 0, end: 0 }); });
+  replyControl.hold();
+  try {
+    act(() => { type(value.view.getByLabelText('Slide text'), 'Typed'); });
+    await waitFor(() => expect(replyControl.count()).toBe(1));
+    act(() => {
+      const notes = value.view.getByTestId('pptx-notes-textarea');
+      fireEvent.change(notes, { target: { value: 'A' } });
+      fireEvent.change(notes, { target: { value: 'AB' } });
+    });
+  } finally { replyControl.release(); }
+  await act(async () => { await value.api.flushPendingInput(); });
+  await waitFor(() => expect((value.view.getByTestId('pptx-notes-textarea') as HTMLTextAreaElement).value).toBe('AB'));
+  expect((await (await value.api.handleAsync()).snapshot()).slides[0]!.notes).toBe('AB');
+  expect((await story(value.api)).text).toBe(`Typed${target.text}`);
+  expect(error).not.toHaveBeenCalled();
+});
+
+for (const method of ['setSlideNotes', 'addComment'] as const) {
+  test(`typing queues behind an unacknowledged ${method}`, async () => {
+    const error = mock(() => {});
+    const value = await open({ onError: error });
+    const target = await story(value.api);
+    await act(async () => { await value.api.selectText({ slide: 1, shapeId: target.shapeId, storyId: target.storyId, start: 0, end: 0 }); });
+    const access = await value.api.handleAsync();
+    replyControl.hold();
+    const invoked = method === 'setSlideNotes' ? access.setSlideNotes(target.slideId, 'Notes')
+      : access.addComment(target.slideId, { author: 'Writer', text: 'Comment', created: '2026-01-01T00:00:00Z' });
+    try {
+      await waitFor(() => expect(replyControl.count()).toBe(1));
+      act(() => { type(value.view.getByLabelText('Slide text'), 'NEXT'); });
+    } finally { replyControl.release(); }
+    await act(async () => { await invoked; await value.api.flushPendingInput(); });
+    expect((await story(value.api)).text).toBe(`NEXT${target.text}`);
+    if (method === 'setSlideNotes') expect((await access.snapshot()).slides[0]!.notes).toBe('Notes');
+    else expect(await access.comments()).toMatchObject([{ text: 'Comment' }]);
+    expect(error).not.toHaveBeenCalled();
+  });
+}
+
+test('invalid comments return a typed payload refusal and preserve editing', async () => {
+  const value = await open();
+  const access = await value.api.handleAsync();
+  const target = await story(value.api);
+  await act(async () => {
+    await expect(access.addComment(target.slideId, { author: 'Writer', text: '', created: '2026-01-01T00:00:00Z' }))
+      .rejects.toMatchObject({ code: 'invalid-arguments' });
+    await access.addComment(target.slideId, { author: 'Writer', text: 'Valid', created: '2026-01-01T00:00:00Z' });
+    await value.api.selectText({ slide: 1, shapeId: target.shapeId, storyId: target.storyId, start: 0, end: 0 });
+    type(value.view.getByLabelText('Slide text'), 'NEXT');
+    await value.api.flushPendingInput();
+  });
+  expect(value.api.failure).toBeUndefined();
+  expect((await story(value.api)).text).toBe(`NEXT${target.text}`);
+  expect(await access.comments()).toMatchObject([{ text: 'Valid' }]);
+});
 
 test('notes_comments_change', async () => {
   const changed = mock((_snapshot: DeckSnapshot) => {});

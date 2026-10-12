@@ -1,7 +1,35 @@
 import { faultControl, open, story, type } from './peerlessTestHarness';
-import { expect, mock, test } from 'bun:test';
+import { expect, mock, spyOn, test } from 'bun:test';
 import type { DeckSnapshot } from '@betteroffice/pptx';
+import * as wasm from '../../../pptx/src/wasm/loader';
 const { act, waitFor } = await import('@testing-library/react');
+
+test('recovery retains acknowledged typing before the first checkpoint', async () => {
+  const error = mock(() => {});
+  const value = await open({ onError: error });
+  const target = await story(value.api);
+  await act(async () => { await value.api.selectText({ slide: 1, shapeId: target.shapeId, storyId: target.storyId, start: 0, end: 0 }); });
+  const checkpoint = spyOn(value.client, 'checkpoint');
+  try {
+    const input = value.view.getByLabelText('Slide text');
+    await act(async () => { type(input, 'Accepted'); await value.api.flushPendingInput(); });
+    const acceptedSeq = value.client.state.throughSeq;
+    expect(checkpoint).not.toHaveBeenCalled();
+    faultControl.unknown();
+    await act(async () => { type(input, 'Uncertain'); await value.api.flushPendingInput().catch(() => {}); });
+    await waitFor(() => expect(error).toHaveBeenCalledTimes(1));
+    const recovered = await value.api.recoverySave();
+    const saved = wasm.openPresentation(recovered.bytes);
+    try {
+      const content = saved.readContent();
+      expect(content.ok).toBe(true);
+      if (!content.ok) throw new Error(content.failure.message);
+      expect(content.stories[0]!.text).toBe(`Accepted${target.text}`);
+      expect(recovered.throughSeq).toBe(acceptedSeq);
+    } finally { saved.dispose(); }
+    expect(checkpoint).not.toHaveBeenCalled();
+  } finally { checkpoint.mockRestore(); }
+});
 
 test('unknown_outcome', async () => {
   const error = mock(() => {});

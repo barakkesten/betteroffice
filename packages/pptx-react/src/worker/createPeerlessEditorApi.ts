@@ -131,14 +131,18 @@ export function createPeerlessEditorApi(run: PeerlessPresentation, canvas: HTMLC
       await installed(); return peerlessPositionAtPoint(run, canvas, clientX, clientY);
     }),
   };
-  const mutations = Object.fromEntries(PRESENTATION_COMMAND_MUTATIONS.map((method) => [method, (...args: unknown[]) => fenced(async () => {
+  const mutations = Object.fromEntries(PRESENTATION_COMMAND_MUTATIONS.map((method) => [method, async (...args: unknown[]) => {
+    admit();
     const ack = await invokePeerless(run, { method, args } as PresentationCommandMutation);
-    if (ack.outcomes.some((outcome) => outcome.status === 'refused' || outcome.status === 'cancelled')) {
-      throw new PptxCommandAdmissionError('target-changed');
+    run.require();
+    const refused = ack.outcomes.find((outcome) => outcome.status === 'refused' || outcome.status === 'cancelled');
+    if (refused) {
+      throw new PptxCommandAdmissionError(refused.reason === 'invalid-payload' ? 'invalid-arguments'
+        : refused.reason === 'read-only' ? 'read-only' : 'target-changed');
     }
     await installed();
     return ack.mutationResult;
-  })])) as Pick<PptxPeerlessEditorAccess, keyof PresentationCommandMutationMethods>;
+  }])) as Pick<PptxPeerlessEditorAccess, keyof PresentationCommandMutationMethods>;
   const access: PptxPeerlessEditorAccess = Object.freeze({
     ...mutations,
     encodeStateVector: () => read('encodeStateVector'),

@@ -137,7 +137,7 @@ beforeEach(() => {
     const font = readFile(new URL('../../../../crates/ooxml-text/tests/fonts/LiberationSans-Regular.ttf', import.meta.url));
     let actual: PeerlessSession | undefined;
     const value = font.then((font) => createPeerlessSession(bytes, { readOnly: options.readOnly, observeChanges: options.observeChanges,
-      activeSlideIndex: options.activeSlideIndex, collaboration: options.collaboration, clientId: options.clientId, worker: () => endpoint as unknown as Worker,
+      activeSlideIndex: options.activeSlideIndex, collaboration: options.collaboration, clientId: options.clientId, initialUpdate: options.initialUpdate, worker: () => endpoint as unknown as Worker,
       fonts: [{ family: 'Liberation Sans', bytes: new Uint8Array(font) }] })).then((session) => { actual = session; return session; });
     owner = { ready: bounded(value.then((session) => session.ready)).then((value) => { client = value; return value; }),
       get failure() { return actual?.failure; },

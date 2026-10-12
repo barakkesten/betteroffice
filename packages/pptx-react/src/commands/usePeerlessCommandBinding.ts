@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import type { Translations } from '@betteroffice/pptx-i18n';
 import type { PresentationCommandAck, Proposal } from '@betteroffice/pptx';
 import type { PeerlessReviewState } from '../worker/PeerlessReview';
@@ -7,7 +8,7 @@ import { useTranslation } from '../i18n';
 import type { PptxEditorTool } from '../components/toolbarTypes';
 import type { PeerlessPresentation } from '../worker/usePeerlessPresentation';
 import { formatPeerlessText, peerlessTextContext } from '../worker/peerlessTextCommands';
-import { hitConfirmedGeometry } from '../worker/peerlessViewStore';
+import { commitComposition, hitConfirmedGeometry } from '../worker/peerlessViewStore';
 import { peerlessHistory } from '../worker/peerlessHistory';
 import { peerlessObjectCommand } from '../worker/peerlessObjectCommands';
 import { peerlessInsertSlide } from '../worker/peerlessSlideCommands';
@@ -90,8 +91,20 @@ export function usePeerlessCommandBinding(run: PeerlessPresentation | null, {
         switch (id) {
           case 'zoom': setZoom((args as PptxCommandArgs['zoom']).scale); focus(); return { ok: true, status: 'executed' };
           case 'proposalsPanel': setReview({ ...review, open: args === null ? !review.open : (args as PptxCommandArgs['proposalsPanel'])!.open }); return { ok: true, status: 'opened' };
-          case 'proposalSelect': setReview({ ...review, selectedId: (args as PptxCommandArgs['proposalSelect']).proposalId }); return { ok: true, status: 'executed' };
-          case 'proposalDiff': setReview({ ...review, diff: (args as PptxCommandArgs['proposalDiff']).enabled }); return { ok: true, status: 'executed' };
+          case 'proposalSelect': flushSync(() => setReview({ ...review, selectedId: (args as PptxCommandArgs['proposalSelect']).proposalId })); return { ok: true, status: 'executed' };
+          case 'proposalDiff': {
+            const enabled = (args as PptxCommandArgs['proposalDiff']).enabled;
+            const composition = run.store.getSnapshot().composition;
+            if (enabled && composition) {
+              const ack = await commitComposition(run.store, composition.text, performance.now());
+              const result = receipt(ack, env);
+              if (!result.ok) return result;
+              await run.store.fence();
+              run.require();
+            }
+            flushSync(() => setReview({ ...review, diff: enabled }));
+            return { ok: true, status: 'executed' };
+          }
           case 'slideshow': await run.store.fence(); setReview({ ...review, presenting: true }); return { ok: true, status: 'opened' };
           case 'exportPng': await exportPng(); return { ok: true, status: 'executed' };
           case 'proposalAccept': operation = invokePeerless(run, { method: 'acceptProposal', args: [(args as PptxCommandArgs['proposalAccept']).proposalId, { force: (args as PptxCommandArgs['proposalAccept']).force }] }); setReview({ ...review, diff: false }); break;

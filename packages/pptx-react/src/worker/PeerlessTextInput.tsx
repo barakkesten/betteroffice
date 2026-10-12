@@ -217,6 +217,10 @@ export function PeerlessTextInput({ store, visual = store, viewport, onShortcut,
     input.addEventListener('focus', focus);
     input.addEventListener('blur', blur);
     return () => {
+      const composition = store.getSnapshot().composition;
+      if (composition && !store.getSnapshot().editState.readOnly) {
+        void commitComposition(store, composition.text, performance.now()).catch(() => {});
+      }
       input.removeEventListener('beforeinput', beforeInput);
       input.removeEventListener('keydown', keyDown);
       input.removeEventListener('compositionstart', compositionStart);

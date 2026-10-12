@@ -103,6 +103,8 @@ export function usePeerlessPresentation(
     let changeEvent: PresentationCommandAck['change'];
     let checkpointTimer: ReturnType<typeof setTimeout> | undefined;
     let checkpoint = { bytes: props.file instanceof Uint8Array ? props.file.slice() : new Uint8Array(props.file).slice(), throughSeq: 0, version: '' };
+    let checkpointUpdate: Uint8Array | undefined;
+    let journal: { throughSeq: number; version: string; updates: Uint8Array[] }[] = [];
     let firstPainted = false;
     let published = false;
     let paintedFrame: PresentationCommandFrame | undefined;
@@ -244,13 +246,15 @@ export function usePeerlessPresentation(
       await base?.fence(); await whenPainted();
       if (!current()) return;
       const result = await client.checkpoint?.();
-      if (current() && result && result.throughSeq === client.state.throughSeq && result.version === client.state.version) {
+      if (current() && result && result.throughSeq >= checkpoint.throughSeq) {
         checkpoint = { bytes: new Uint8Array(result.bytes).slice(), throughSeq: result.throughSeq, version: result.version };
+        checkpointUpdate = result.recoveryUpdate ? new Uint8Array(result.recoveryUpdate).slice() : undefined;
+        journal = journal.filter((entry) => entry.throughSeq > result.throughSeq);
       }
     }
 
     function scheduleCheckpoint(client: PresentationCommandClient): void {
-      clearTimeout(checkpointTimer);
+      if (checkpointTimer) return;
       checkpointTimer = setTimeout(() => { checkpointTimer = undefined; void saveCheckpoint(client).catch(report); }, 1000);
     }
 
@@ -340,6 +344,8 @@ export function usePeerlessPresentation(
       void Promise.all([owner.ready, fontsReady]).then(async ([client]) => {
         while (current() && openingModes.size) await Promise.all([...openingModes]);
         if (!current()) return;
+        checkpoint.version = client.state.version;
+        checkpointUpdate = client.state.recoveryUpdate ? new Uint8Array(client.state.recoveryUpdate).slice() : undefined;
         base = createPeerlessViewStore(client, {
           checkpoint(pixels) {
             const restoreFrame = framePainter?.checkpoint(pixels);
@@ -431,6 +437,10 @@ export function usePeerlessPresentation(
         }
         disposers.push(client.subscribe((ack) => {
           if (!current()) return;
+          if (ack.throughSeq > checkpoint.throughSeq && ack.updates?.length) {
+            journal.push({ throughSeq: ack.throughSeq, version: ack.version,
+              updates: ack.updates.map((update) => new Uint8Array(update.bytes).slice()) });
+          }
           if (ack.slides) {
             const restored = new Set(ack.slides.map((slide) => slide.id));
             for (const id of vanished) if (restored.has(id)) vanished.delete(id);
@@ -480,7 +490,24 @@ export function usePeerlessPresentation(
             if (!currentFile()) throw new PptxWorkerEditorDisposedError();
             if (!fatal) await saveCheckpoint(client);
             if (!currentFile()) throw new PptxWorkerEditorDisposedError();
-            return { ...checkpoint, bytes: checkpoint.bytes.slice(), recovery: true };
+            if (!journal.length) return { ...checkpoint, bytes: checkpoint.bytes.slice(), recovery: true };
+            if (!checkpointUpdate) throw new Error('Recovery baseline is unavailable');
+            const recovering = peerlessSessionOpener.open(checkpoint.bytes, { fonts, initialUpdate: checkpointUpdate });
+            try {
+              const replay = await recovering.ready;
+              for (const entry of journal) for (const update of entry.updates) {
+                if (!currentFile()) throw new PptxWorkerEditorDisposedError();
+                const ack = await replay.dispatch({ kind: 'applyRemoteUpdate', payload: { bytes: update.slice().buffer,
+                  inputTime: 0, undoGroup: 'recovery' } });
+                if (ack.outcomes.some((outcome) => outcome.status === 'refused' || outcome.status === 'cancelled')) {
+                  throw new Error('Recovery update refused');
+                }
+              }
+              const bytes = await replay.save();
+              if (!currentFile()) throw new PptxWorkerEditorDisposedError();
+              const latest = journal[journal.length - 1]!;
+              return { bytes, throughSeq: latest.throughSeq, version: latest.version, recovery: true };
+            } finally { await recovering.dispose(); }
           },
           async installFont(face) {
             require();

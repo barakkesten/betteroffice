@@ -140,6 +140,12 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
   const subscribeReview = useCallback((listener: () => void) => presentation?.store.subscribeEditState(listener) ?? (() => {}), [presentation]);
   const reviewSnapshot = useCallback(() => presentation?.store.getSnapshot().editState ?? null, [presentation]);
   const proposals = useSyncExternalStore(subscribeReview, reviewSnapshot, reviewSnapshot)?.proposals ?? [];
+  useLayoutEffect(() => {
+    if (review.selectedId && !proposals.some((proposal) => proposal.id === review.selectedId)) {
+      setReview((state) => ({ ...state, selectedId: null, diff: false }));
+    }
+  }, [proposals, review.selectedId]);
+  useEffect(() => { if (!review.diff) focus(); }, [review.diff, focus]);
   const exportPng = useCallback(async () => {
     if (!presentation) return;
     const blob = await peerlessExportPng(presentation);

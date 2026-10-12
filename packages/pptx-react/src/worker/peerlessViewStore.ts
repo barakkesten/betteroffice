@@ -515,7 +515,7 @@ export function createPeerlessViewStore(
   function send(input: WaitingInput): void {
     let intent = input.intent;
     if (intent.kind === 'undo' || intent.kind === 'redo' || intent.kind === 'activateSlide' ||
-      intent.kind === 'insertTextBox' || intent.kind === 'insertShape' || intent.kind === 'insertPicture' || intent.kind === 'applyEdits' || intent.kind === 'registerFont') {
+      intent.kind === 'insertTextBox' || intent.kind === 'insertShape' || intent.kind === 'insertPicture' || intent.kind === 'applyEdits' || intent.kind === 'registerFont' || intent.kind === 'invoke') {
       input.basis = { epoch: identity.epoch, version: client.state.version };
       input.basisThroughSeq = client.state.throughSeq;
     }
@@ -775,7 +775,7 @@ function chainedIntent(intent: PresentationCommandIntent, seq: number): Presenta
 
 function isTextMutation(intent: PresentationCommandIntent): boolean {
   return ['insertText', 'replaceText', 'deleteBackward', 'deleteForward', 'paragraphBreak', 'compositionCommit',
-    'formatText', 'setParagraphAlignment', 'undo', 'redo', 'moveShape', 'setShapeRect', 'insertTextBox', 'insertShape', 'insertPicture', 'applyEdits', 'registerFont', 'applyRemoteUpdate'].includes(intent.kind);
+    'formatText', 'setParagraphAlignment', 'undo', 'redo', 'moveShape', 'setShapeRect', 'insertTextBox', 'insertShape', 'insertPicture', 'applyEdits', 'registerFont', 'applyRemoteUpdate', 'invoke'].includes(intent.kind);
 }
 
 function isLocalSelection(intent: PresentationCommandIntent): boolean {

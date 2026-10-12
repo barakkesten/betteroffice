@@ -3,11 +3,12 @@ import type { PeerlessPresentation } from './usePeerlessPresentation';
 import type { PeerlessConfirmedFrame } from './peerlessViewStore';
 import { createCommandFramePainter } from './commandFramePainter';
 
-export async function peerlessFrameSource(run: PeerlessPresentation, index: number) {
+export async function peerlessFrameSource(run: PeerlessPresentation, index?: number) {
   run.require();
   await run.store.fence();
   run.require();
-  const slide = run.client.state.slides[index];
+  const slide = index === undefined ? run.client.state.slides.find((slide) => slide.id === run.client.state.activeSlideId)
+    : run.client.state.slides[index];
   if (!slide) throw new Error('Slide is unavailable');
   const reply = await run.client.thumbnail(slide.id);
   run.require();
@@ -20,7 +21,7 @@ export async function peerlessFrameSource(run: PeerlessPresentation, index: numb
 }
 
 export async function peerlessExportPng(run: PeerlessPresentation): Promise<Blob> {
-  const source = await peerlessFrameSource(run, run.client.state.slides.findIndex((slide) => slide.id === run.client.state.activeSlideId));
+  const source = await peerlessFrameSource(run);
   const canvas = document.createElement('canvas');
   const painter = createCommandFramePainter(canvas, { images: run.images, scale: 1, dpr: 1, current: () => run.current });
   try {
