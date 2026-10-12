@@ -119,6 +119,62 @@ for (const capability of ['Worker', 'OffscreenCanvas'] as const) {
   });
 }
 
+test('in-thread room changes connect a desktop-style provider host without a disposed replica', async () => {
+  const initial = await open();
+  initial.view.unmount();
+  const font = await readFile(new URL('../../../crates/ooxml-text/tests/fonts/LiberationSans-Regular.ttf', import.meta.url));
+  const fonts = [{ family: 'Liberation Sans', bytes: new Uint8Array(font) }];
+  const providers: { roomId: string; replica: AsyncCollaborationReplica; provider: CollaborationProvider }[] = [];
+  const connections: string[] = [];
+  const disconnections: string[] = [];
+  const releases: Promise<unknown>[] = [];
+  const errors: Error[] = [];
+  function Host({ roomId }: { roomId: string }) {
+    const [replica, setReplica] = useState<AsyncCollaborationReplica | null>(null);
+    const [presence, setPresence] = useState<CollaborationProvider>();
+    useEffect(() => {
+      if (!replica) return;
+      const listeners = new Set<(event: CollaborationTransportEvent) => void>();
+      const provider = new CollaborationProvider(replica, {
+        connect() { connections.push(roomId); for (const listener of listeners) listener({ type: 'open' }); },
+        disconnect() { disconnections.push(roomId); },
+        send() { return true; },
+        onEvent(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+      });
+      providers.push({ roomId, replica, provider });
+      setPresence(provider);
+      const unsubscribe = provider.onError((error) => { errors.push(error); });
+      provider.connect();
+      return () => {
+        releases.push(replica.encodeStateVector().catch((error) => { errors.push(error); }));
+        unsubscribe(); provider.destroy(); setPresence(undefined);
+      };
+    }, [replica, roomId]);
+    return <PptxEditor experimentalWorkerOpen={false} fonts={fonts} file={initial.bytes}
+      collaboration={{ roomId, clientId: 700, onReplica: setReplica, presence }}
+      onError={(error) => { errors.push(error); }} />;
+  }
+  const view = render(<Host roomId="A" />);
+  try {
+    await waitFor(() => expect(connections).toEqual(['A']));
+    const old = providers[0]!.replica;
+    expect(() => view.rerender(<Host roomId="B" />)).not.toThrow();
+    await waitFor(() => expect(providers[providers.length - 1]!.replica).not.toBe(old));
+    const current = providers[providers.length - 1]!;
+    expect(current.roomId).toBe('B');
+    expect(current.provider.status).toBe('connected');
+    expect(connections[connections.length - 1]).toBe('B');
+    expect(disconnections).toContain('A');
+    expect(errors).toEqual([]);
+    expect(await current.replica.encodeStateVector()).toBeInstanceOf(Uint8Array);
+    await expect(old.encodeStateVector()).rejects.toThrow();
+    view.unmount();
+    await Promise.all(releases);
+    expect(errors).toEqual([]);
+    expect(disconnections.filter((room) => room === 'B')).toHaveLength(connections.filter((room) => room === 'B').length);
+  } finally { view.unmount(); }
+});
+
 for (const change of ['room', 'disconnect'] as const) {
   test(`in-thread collaboration ${change} disposes the old session and drops its edits`, async () => {
     const initial = await open();
