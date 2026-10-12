@@ -256,7 +256,11 @@ export class WorkerDraftController {
     composition.sealed = true;
     const input = composition.source === 'cell' ? this.cellInput : this.formulaInput;
     input?.blur();
-    return { composition: composition.done };
+    return { composition: composition.done, restoreFocus: () => {
+      if (this.disposed || this.composing || this.draft || !this.options.editable()) return;
+      if (composition.source === 'formula') this.formulaInput?.focus({ preventScroll: true });
+      else this.options.focus();
+    } };
   };
 
   refused(seq: number | null, value: InputDraft): void {

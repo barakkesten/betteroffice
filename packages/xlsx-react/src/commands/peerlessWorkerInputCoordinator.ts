@@ -587,7 +587,10 @@ export function createPeerlessWorkerInputCoordinator(
         admittedAfter = sealed ? { last: sealed, boundary: sealed } : after;
         try {
           const value = operation();
-          void lease.wait(value).then(result.resolve, result.reject);
+          void lease.wait(value).then((value) => {
+            seal.restoreFocus?.();
+            result.resolve(value);
+          }, result.reject);
           return fence === true ? Promise.resolve(value).then(() => {}) : undefined;
         } finally { admittedReadOnly = previous; admittedAfter = previousAfter; }
       };
