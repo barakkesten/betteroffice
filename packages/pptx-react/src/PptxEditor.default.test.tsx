@@ -1,8 +1,9 @@
 import { expect, mock, spyOn, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { act, render, waitFor } from '@testing-library/react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { AsyncCollaborationReplica } from '@betteroffice/pptx';
+import { CollaborationProvider, type CollaborationTransportEvent } from '@betteroffice/pptx/editor';
 import { open, story } from './worker/peerlessTestHarness';
 import * as wasm from '../../pptx/src/wasm/loader';
 import { workerEditorSessionOpener } from './worker/useEditableSessionPresentation';
@@ -54,6 +55,100 @@ for (const operation of ['handle', 'save', 'host'] as const) {
       expect(onReady).toHaveBeenCalledTimes(1);
       expect(onError).toHaveBeenCalledTimes(1);
     } finally { view.unmount(); diagnostic.mockRestore(); }
+  });
+}
+
+for (const capability of ['Worker', 'OffscreenCanvas'] as const) {
+  test(`missing ${capability} keeps the fallback replica and provider stable when presence arrives`, async () => {
+    const initial = await open();
+    initial.view.unmount();
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, capability);
+    Object.defineProperty(globalThis, capability, { configurable: true, value: undefined });
+    const font = await readFile(new URL('../../../crates/ooxml-text/tests/fonts/LiberationSans-Regular.ttf', import.meta.url));
+    const fonts = [{ family: 'Liberation Sans', bytes: new Uint8Array(font) }];
+    const publications: (AsyncCollaborationReplica | null)[] = [];
+    const providers: CollaborationProvider[] = [];
+    const apis: PptxAsyncEditorApi[] = [];
+    const errors: Error[] = [];
+    let connections = 0;
+    let disconnections = 0;
+    function Host() {
+      const [replica, setReplica] = useState<AsyncCollaborationReplica | null>(null);
+      const [presence, setPresence] = useState<CollaborationProvider>();
+      const publish = useCallback((value: AsyncCollaborationReplica | null) => {
+        publications.push(value);
+        if (publications.length < 10) setReplica(value);
+      }, []);
+      useEffect(() => {
+        if (!replica) return;
+        const listeners = new Set<(event: CollaborationTransportEvent) => void>();
+        const provider = new CollaborationProvider(replica, {
+          connect() { connections++; for (const listener of listeners) listener({ type: 'open' }); },
+          disconnect() { disconnections++; },
+          send() { return true; },
+          onEvent(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+        });
+        providers.push(provider);
+        setPresence(provider);
+        provider.connect();
+        return () => { provider.destroy(); setPresence(undefined); };
+      }, [replica]);
+      return <PptxEditor fonts={fonts} file={initial.bytes} collaboration={{ clientId: 700, onReplica: publish, presence }}
+        onReady={(api) => { apis.push(api); }} onError={(error) => { errors.push(error); }} />;
+    }
+    const view = render(<Host />);
+    try {
+      await waitFor(() => expect(providers.length).toBeGreaterThan(0));
+      await act(async () => { view.rerender(<Host />); await new Promise((resolve) => setTimeout(resolve, 20)); });
+      expect(publications).toHaveLength(1);
+      expect(providers).toHaveLength(1);
+      expect(connections).toBe(1);
+      expect(disconnections).toBe(0);
+      expect(apis).toHaveLength(1);
+      expect(errors).toEqual([]);
+      expect(await publications[0]!.encodeStateVector()).toBeInstanceOf(Uint8Array);
+      expect(await apis[0]!.saveAsync()).toBeInstanceOf(Uint8Array);
+      view.unmount();
+      expect(publications).toEqual([expect.anything(), null]);
+      expect(disconnections).toBe(1);
+    } finally {
+      view.unmount();
+      if (descriptor) Object.defineProperty(globalThis, capability, descriptor);
+      else Reflect.deleteProperty(globalThis, capability);
+    }
+  });
+}
+
+for (const change of ['room', 'disconnect'] as const) {
+  test(`in-thread collaboration ${change} disposes the old session and drops its edits`, async () => {
+    const initial = await open();
+    initial.view.unmount();
+    const font = await readFile(new URL('../../../crates/ooxml-text/tests/fonts/LiberationSans-Regular.ttf', import.meta.url));
+    const fonts = [{ family: 'Liberation Sans', bytes: new Uint8Array(font) }];
+    const apis: PptxAsyncEditorApi[] = [];
+    const publications: (AsyncCollaborationReplica | null)[] = [];
+    const publish = (value: AsyncCollaborationReplica | null) => { publications.push(value); };
+    const ui = (roomId?: string) => <PptxEditor experimentalWorkerOpen={false} fonts={fonts} file={initial.bytes} clientId={700}
+      collaboration={roomId ? { roomId, clientId: 700, onReplica: publish } : undefined}
+      onReady={(api) => { apis.push(api); }} />;
+    const view = render(ui('first'));
+    try {
+      await waitFor(() => expect(apis).toHaveLength(1));
+      const old = apis[0]!;
+      const access = await old.handleAsync();
+      const snapshot = await access.snapshot();
+      await act(async () => { await access.setSlideNotes(snapshot.slides[0]!.id, 'ROOM_A'); });
+      expect((await access.snapshot()).slides[0]!.notes).toBe('ROOM_A');
+      view.rerender(ui(change === 'room' ? 'second' : undefined));
+      await waitFor(() => expect(apis).toHaveLength(2));
+      expect((await (await apis[1]!.handleAsync()).snapshot()).slides[0]!.notes).toBe(snapshot.slides[0]!.notes);
+      await expect(old.saveAsync()).rejects.toThrow('no longer open');
+      await expect(publications[0]!.encodeStateVector()).rejects.toThrow();
+      expect(publications.slice(0, 2)).toEqual([expect.anything(), null]);
+      if (change === 'room') expect(publications[2]).not.toBe(publications[0]);
+      view.unmount();
+      expect(publications[publications.length - 1]).toBeNull();
+    } finally { view.unmount(); }
   });
 }
 
