@@ -116,6 +116,11 @@ export default function Editor({
   const docx = useRef<DocxEditorRef>(null);
   const xlsx = useRef<XlsxEditorApi | null>(null);
   const pptx = useRef<PptxAsyncEditorApi | null>(null);
+  const presentationWaiter = useRef<{
+    resolve(api: PptxAsyncEditorApi): void;
+    reject(error: Error): void;
+  } | null>(null);
+  const presentationFailure = useRef<Error | null>(null);
   const harness = (globalThis as typeof globalThis & { __DOCX_PEERLESS_HARNESS__?: boolean }).__DOCX_PEERLESS_HARNESS__
     && file.format === "docx" && peerlessDocx();
   const [harnessMode, setHarnessMode] = useState<"editing" | "viewing">("editing");
@@ -181,10 +186,16 @@ export default function Editor({
     (bytes: Uint8Array) => callbacks.current.onSave(bytes),
     []
   );
+  const presentationUnavailable = useCallback((failure: Error) => {
+    presentationFailure.current = failure;
+    presentationWaiter.current?.reject(failure);
+    presentationWaiter.current = null;
+  }, []);
   const error = useCallback((error: Error) => {
     if (serialization.current) serialization.current.failure = error;
+    if (file.format === "pptx" && !pptx.current) presentationUnavailable(error);
     callbacks.current.onError(error);
-  }, []);
+  }, [file.format, presentationUnavailable]);
   const workbookReady = useCallback(
     (api: XlsxEditorApi) => {
       xlsx.current = api;
@@ -198,10 +209,19 @@ export default function Editor({
   );
   const presentationReady = useCallback((api: PptxAsyncEditorApi) => {
     pptx.current = api;
-    return () => { pptx.current = null; };
-  }, []);
+    presentationFailure.current = null;
+    presentationWaiter.current?.resolve(api);
+    presentationWaiter.current = null;
+    return () => {
+      if (pptx.current !== api) return;
+      pptx.current = null;
+      presentationUnavailable(new Error("The presentation editor was disposed."));
+    };
+  }, [presentationUnavailable]);
 
   useEffect(() => {
+    let active = true;
+    const disposed = new Error("The presentation editor was disposed.");
     onReady({
       print() {
         if (file.format === "docx") docx.current?.print();
@@ -220,12 +240,23 @@ export default function Editor({
           const current: { failure: Error | null } = { failure: null };
           serialization.current = current;
           try {
+            let presentation = pptx.current;
+            if (file.format === "pptx") {
+              if (!active) throw disposed;
+              if (!presentation) {
+                if (presentationFailure.current) throw presentationFailure.current;
+                presentation = await new Promise<PptxAsyncEditorApi>((resolve, reject) => {
+                  presentationWaiter.current = { resolve, reject };
+                });
+              }
+              if (!active || pptx.current !== presentation) throw disposed;
+            }
             const bytes =
               file.format === "docx"
                 ? await docx.current?.save()
                 : file.format === "xlsx"
                 ? xlsx.current?.handle.save()
-                : await pptx.current?.saveAsync();
+                : await presentation!.saveAsync();
             return savedBytes(bytes, current.failure);
           } finally {
             serialization.current = null;
@@ -236,8 +267,12 @@ export default function Editor({
         return next;
       },
     });
-    return () => onReady(null);
-  }, [file.format, onReady]);
+    return () => {
+      active = false;
+      if (file.format === "pptx") presentationUnavailable(disposed);
+      onReady(null);
+    };
+  }, [file.format, onReady, presentationUnavailable]);
 
   if (file.format === "docx")
     return (
