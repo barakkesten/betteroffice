@@ -29,10 +29,12 @@ const presentationReplica = {
 };
 const providerReplicas: unknown[] = [];
 let presentationProps: PptxAsyncEditorProps;
+const presentationOptions: PptxAsyncEditorProps['collaboration'][] = [];
 let savePresentation = async () => Uint8Array.of(3);
 mock.module("@betteroffice/pptx-react", () => ({
   PptxEditor: (props: PptxAsyncEditorProps) => {
     presentationProps = props;
+    presentationOptions.push(props.collaboration);
     useEffect(() => props.onReady?.({ saveAsync: () => savePresentation(), focus() {} } as PptxAsyncEditorApi), [props.onReady]);
     useEffect(() => {
       props.collaboration?.onReplica?.(presentationReplica);
@@ -206,8 +208,12 @@ test("presentation serialization uses the async default and preserves save failu
 
 test("presentation collaboration connects the async replica and presence provider", async () => {
   providerReplicas.length = 0;
+  presentationOptions.length = 0;
   await mount("pptx", true);
   expect(providerReplicas).toEqual([presentationReplica]);
   expect(await presentationReplica.encodeStateVector()).toEqual(Uint8Array.of(1));
   expect(presentationProps.collaboration?.presence).toBeInstanceOf(Provider);
+  const openingOptions = presentationOptions.filter((options) => options && !options.presence);
+  expect(openingOptions.length).toBeGreaterThan(1);
+  expect(new Set(openingOptions).size).toBe(1);
 });

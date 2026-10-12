@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DocxEditor, type DocxEditorRef } from "@betteroffice/docx-react";
 import { XlsxEditor, type XlsxEditorApi } from "@betteroffice/xlsx-react";
 import { PptxEditor, type PptxAsyncEditorApi } from "@betteroffice/pptx-react";
@@ -137,6 +137,13 @@ export default function Editor({
   const [provider, setProvider] = useState<
     DocxProvider | XlsxProvider | PptxProvider | null
   >(null);
+  const presentationPresence = provider instanceof PptxProvider ? provider : undefined;
+  const presentationCollaboration = useMemo(() => room ? {
+    roomId: room.id,
+    clientId,
+    onReplica: setPresentationReplica,
+    presence: presentationPresence,
+  } : undefined, [room?.id, clientId, presentationPresence]);
   const callbacks = useRef({ onSave, onChange, onError, onStatus });
   callbacks.current = { onSave, onChange, onError, onStatus };
 
@@ -301,15 +308,7 @@ export default function Editor({
       onChange={changed}
       onReady={presentationReady}
       onError={error}
-      collaboration={
-        room
-          ? {
-              clientId,
-              onReplica: setPresentationReplica,
-              presence: provider instanceof PptxProvider ? provider : undefined,
-            }
-          : undefined
-      }
+      collaboration={presentationCollaboration}
     />
   );
 }
