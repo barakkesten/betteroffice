@@ -140,9 +140,8 @@ export function usePeerlessInsertion(run: PeerlessPresentation | null, canvas: R
       : preset ? current.origin.run.store.dispatch({ kind: 'insertShape', payload: { ...payload,
         draft: { name: preset, rect, geometry: preset, fill: '#d9eaf7' } } }) : null;
     setTool('select');
-    void operation?.then((ack) => {
-      if (current.origin.run.current && ack.outcomes.some((outcome) => outcome.committed) && textbox) focus();
-    }).catch(() => {});
+    if (operation && textbox) focus();
+    void operation?.catch(() => {});
     return true;
   };
   return { tool, preview, setTool, cancel, onPointerDown, onPointerMove, onPointerUp,
