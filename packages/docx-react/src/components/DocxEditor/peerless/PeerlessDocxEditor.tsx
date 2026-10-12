@@ -1,3 +1,4 @@
+import { useWorkerPropertyDialogs } from './useWorkerPropertyDialogs';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   applyFrameDelta,
@@ -131,6 +132,9 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
   const getBinding = useCallback(() => active.current?.binding ?? null, []);
   const navigation = useWorkerNavigation(controller, getBinding, scroller, host, zoom, props);
   useLayoutEffect(() => controller.update({ ...controllerOptions, search: search.host, perform: async (id) => {
+    if (id === 'pageSetup') return propertyDialogs.openPageSetup();
+    if (id === 'watermark') return propertyDialogs.openWatermark();
+    if (id === 'insertLink') return propertyDialogs.openLink();
     if (id === 'find' || id === 'replace') { search.open(id === 'replace'); return { ok: true, status: 'opened' }; }
     if (id === 'print') { await print(); return { ok: true, status: 'executed' }; }
     return fileIO.perform(id);
@@ -138,6 +142,7 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
   useImperativeHandle(ref, () => controller.ref, [controller]);
   const shellState = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const effectiveReadOnly = readOnly || (props.mode ?? shellState.mode) === 'viewing';
+  const propertyDialogs = useWorkerPropertyDialogs(controller, props);
   const legacyRef = useRef<PagedEditorRef | null>(null);
   useKeyboardShortcuts({ commands: controller.commands, pagedEditorRef: legacyRef, containerRef: container,
     disableFindReplaceShortcuts: props.disableFindReplaceShortcuts ?? false });
@@ -491,14 +496,14 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
       toolbar={<EditorChromeContext.Provider value={{ showZoomControl: props.showZoomControl ?? true, toolbarExtra: props.toolbarExtra }}>{chrome}</EditorChromeContext.Provider>}
       renderDock={(placement, available) => <PluginDock host={pluginHost} placement={placement}
         activations={activations.filter((activation) => activation.plugin.panel?.placement === placement)} available={available} />}
-      overlays={contextMenu.element} dialogs={<FindReplaceDialog isOpen={searchState.isOpen} replaceMode={searchState.replaceMode}
+      overlays={contextMenu.element} dialogs={<>{propertyDialogs.element}<FindReplaceDialog isOpen={searchState.isOpen} replaceMode={searchState.replaceMode}
         onClose={() => search.close()} currentResult={searchState.result}
         onFind={(text, options) => { void search.find(text, options).catch((error) => props.onError?.(error)); return null; }}
         onFindNext={() => { search.host.searchNext(); return search.getSnapshot().result?.matches[search.getSnapshot().result!.currentIndex] ?? null; }}
         onFindPrevious={() => { search.host.searchPrevious(); return search.getSnapshot().result?.matches[search.getSnapshot().result!.currentIndex] ?? null; }}
         onReplace={(text) => search.replace(text).then(count => count > 0).catch((error) => { props.onError?.(error); return false; })}
         onReplaceAll={async (query, text, options) => { try { await search.find(query, options); return await search.replace(text, true); }
-          catch (error) { props.onError?.(error instanceof Error ? error : new Error(String(error))); return 0; } }} />} fileInputs={<input ref={fileIO.input} type="file" accept=".docx" hidden data-testid="docx-file-input" onChange={fileIO.change} />}
+          catch (error) { props.onError?.(error instanceof Error ? error : new Error(String(error))); return 0; } }} /></>} fileInputs={<input ref={fileIO.input} type="file" accept=".docx" hidden data-testid="docx-file-input" onChange={fileIO.change} />}
       loadingIndicator={documentBuffer && !shellState.error && shellState.status !== 'ready' ? loadingIndicator ?? <DefaultLoadingIndicator /> : null}
       scrollContainerProps={{ tabIndex: 0, onKeyDown: (event) => {
         if ((event.key !== 'PageUp' && event.key !== 'PageDown') || event.defaultPrevented ||

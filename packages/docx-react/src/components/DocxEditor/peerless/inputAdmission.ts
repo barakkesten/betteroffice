@@ -221,7 +221,7 @@ export function createInputAdmission(_options: PeerlessInputAdmissionOptions): P
       if (counted) originalUnackedIntents -= 1;
       return { status: 'ignored', reason: 'read-only' };
     }
-    const authored = !environment && intent.kind !== 'undo' && intent.kind !== 'redo' &&
+    const authored = !['setHyperlink', 'setSectionProperties', 'setWatermark'].includes(intent.kind) && !environment && intent.kind !== 'undo' && intent.kind !== 'redo' &&
       (!isSelection(intent) || (intent.kind === 'navigateCell' && intent.payload.createLastRow));
     if (authored && !stamped.has(intent)) {
       const author = target ? target.suggesting : suggesting === null ? undefined : { name: suggesting, date: new Date().toISOString() };
