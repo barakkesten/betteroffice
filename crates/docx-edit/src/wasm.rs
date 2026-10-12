@@ -1755,7 +1755,7 @@ impl EditSession {
     }
 
     pub fn decode_font(&self, bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
-        crate::decode_resident_font(bytes).map_err(|error| js_err(&error))
+        crate::decode_resident_font(bytes).map_err(js_err)
     }
 
     /// Registers a measurement view of `base` carrying the vertical metrics

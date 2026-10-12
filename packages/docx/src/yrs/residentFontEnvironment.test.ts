@@ -5,6 +5,9 @@ import { preloadEditWasm } from './wasm/index';
 import { preloadOpcWasm } from '../wasm/opc';
 import { residentWorkerFactory } from './__fixtures__/residentWorker';
 import { ResidentSourceWorkerClient as ResidentEngineWorkerClient } from './residentSourceWorkerClient';
+import { createResidentEngineSession } from './residentEngineSession';
+import { setEditWasmHeapLimit } from '../wasm/edit';
+import { wasmModuleMemories } from './index';
 
 const TIMEOUT = 20_000;
 let startWorker: Awaited<ReturnType<typeof residentWorkerFactory>>;
@@ -15,6 +18,34 @@ beforeAll(async () => {
   await preloadOpcWasm(new Uint8Array(readFileSync(resolve(process.cwd(), 'packages/docx/src/wasm/generated/opc/ooxml_opc_bg.wasm'))));
   startWorker = await residentWorkerFactory();
 });
+
+test('oversized WOFF table leaves wasm memory and a bounded editing session intact', async () => {
+  const engine = await createResidentEngineSession(16 * 1024 * 1024);
+  try {
+    engine.openDocument({ package: { document: { content: [{ type: 'paragraph', content: [
+      { type: 'run', content: [{ type: 'text', text: 'Text' }] },
+    ] }] } } }, {});
+    engine.decodeFont(font('woff'));
+    const bytes = new Uint8Array(65);
+    bytes.set(new TextEncoder().encode('wOFF'));
+    const view = new DataView(bytes.buffer);
+    view.setUint32(4, 0x10000);
+    view.setUint32(8, 65);
+    view.setUint16(12, 1);
+    view.setUint32(16, 28);
+    view.setUint32(48, 64);
+    view.setUint32(52, 1);
+    view.setUint32(56, 65 * 1024 * 1024);
+    const before = wasmModuleMemories().find(entry => entry.label === 'docx-edit')!;
+    expect(() => engine.decodeFont(bytes)).toThrow('Invalid resident font size');
+    const after = wasmModuleMemories().find(entry => entry.label === 'docx-edit')!;
+    expect(after.bufferBytes).toBe(before.bufferBytes);
+    expect(after.liveBytes! - before.liveBytes!).toBeLessThan(65536);
+    expect(after.failedAllocationBytes).toBe(0);
+    engine.insertText({ story: 'body', paraId: engine.paragraphs('body')[0]!.paraId, offset: 0 }, 'Still ');
+    expect(engine.paragraphs('body')[0]!.text).toBe('Still Text');
+  } finally { engine.destroy(); setEditWasmHeapLimit(undefined); }
+}, TIMEOUT);
 
 for (const extension of ['woff', 'woff2']) {
   test(`${extension} font environments decode in the worker and publish readiness and presentation`, async () => {
