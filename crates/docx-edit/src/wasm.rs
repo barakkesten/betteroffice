@@ -5369,30 +5369,33 @@ mod tests {
     fn selection_context_reads_only_selected_units_after_text_edits() {
         let session = EditSession::new(77.0).unwrap();
         let doc = session.engine.doc();
-        let para_id = doc.create_story("body", "Seed", "Normal", "left").unwrap();
+        doc.create_story("body", "Seed", "Normal", "left").unwrap();
         for _ in 0..80 {
             doc.split_paragraph(&EditCtx::local("", ""), Position::new("body", 0), None)
                 .unwrap();
         }
+        let para_id = doc.paragraphs("body").unwrap()[80].para_id.clone();
         for index in 0..40 {
             doc.create_story(format!("aux-{index}"), "Other", "Normal", "left")
                 .unwrap();
         }
-        session
-            .selection_context("body", &para_id, 1, &para_id, 1)
-            .unwrap();
+        let read_context = |story: &str, para_id: &str| {
+            let (start, _) = doc
+                .paragraph_index(story)
+                .unwrap()
+                .para_span(para_id)
+                .unwrap();
+            doc.selection_context(&StoryRange::new(story, start + 1, start + 1))
+                .unwrap()
+        };
+        read_context("body", &para_id);
         let assert_targeted = || {
             crate::SNAPSHOT_CHUNKS_BUILT.with(|built| built.set(0));
             crate::TABLE_MEMBERSHIP_STORIES_SCANNED.with(|scanned| scanned.set(0));
-            let context: Value = serde_json::from_str(
-                &session
-                    .selection_context("body", &para_id, 1, &para_id, 1)
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(context["paraId"], para_id);
-            assert_eq!(context["inTable"], false);
-            assert_eq!(context["bold"], false);
+            let context = read_context("body", &para_id);
+            assert_eq!(context.para_id, para_id);
+            assert!(!context.in_table);
+            assert_eq!(context.bold, TriState::Off);
             crate::STORY_INDEX_UNITS_BUILT.with(|built| assert!(built.get() <= 3));
             crate::SNAPSHOT_CHUNKS_BUILT.with(|built| assert_eq!(built.get(), 2));
             crate::TABLE_MEMBERSHIP_STORIES_SCANNED.with(|scanned| assert_eq!(scanned.get(), 0));
@@ -5411,13 +5414,8 @@ mod tests {
             .format_range("body", &para_id, 0, &para_id, 1, r#"{"bold":true}"#)
             .unwrap();
         crate::TABLE_MEMBERSHIP_STORIES_SCANNED.with(|scanned| scanned.set(0));
-        let context: Value = serde_json::from_str(
-            &session
-                .selection_context("body", &para_id, 1, &para_id, 1)
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(context["bold"], true);
+        let context = read_context("body", &para_id);
+        assert_eq!(context.bold, TriState::On);
         crate::TABLE_MEMBERSHIP_STORIES_SCANNED.with(|scanned| assert_eq!(scanned.get(), 0));
         let cell = Any::Map(Arc::new(std::collections::HashMap::from([(
             "story".into(),
@@ -5440,13 +5438,8 @@ mod tests {
         .unwrap();
         crate::TABLE_MEMBERSHIP_STORIES_SCANNED.with(|scanned| scanned.set(0));
         let cell_id = doc.paragraphs("aux-0").unwrap()[0].para_id.clone();
-        let context: Value = serde_json::from_str(
-            &session
-                .selection_context("aux-0", &cell_id, 1, &cell_id, 1)
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(context["inTable"], true);
+        let context = read_context("aux-0", &cell_id);
+        assert!(context.in_table);
         crate::TABLE_MEMBERSHIP_STORIES_SCANNED.with(|scanned| assert_eq!(scanned.get(), 41));
     }
 
