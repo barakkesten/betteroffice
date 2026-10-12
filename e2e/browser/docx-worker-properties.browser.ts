@@ -2,11 +2,14 @@ import { expect, test, type Page, type TestInfo } from 'playwright/test';
 import JSZip from 'jszip';
 import { readFile } from 'node:fs/promises';
 
-async function open(page: Page) {
+async function open(page: Page, twoSections = false) {
   const zip = new JSZip();
   zip.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
   zip.file('_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdDoc" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
-  zip.file('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"><w:body><w:p w14:paraId="00000001"><w:r><w:t>Seed</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>');
+  const properties = '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr>';
+  zip.file('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"><w:body><w:p w14:paraId="00000001">' +
+    (twoSections ? `<w:pPr>${properties}</w:pPr>` : '') + '<w:r><w:t>Seed</w:t></w:r></w:p>' +
+    (twoSections ? '<w:p><w:r><w:t>Second</w:t></w:r></w:p>' : '') + properties + '</w:body></w:document>');
   await page.goto('/?format=docx&peerless=1');
   await page.locator('input[type=file]').last().setInputFiles({ name: 'worker-properties.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: await zip.generateAsync({ type: 'nodebuffer' }) });
   await expect(page.locator('.paged-editor__page canvas').first()).toBeVisible({ timeout: 60000 });
@@ -15,6 +18,21 @@ async function open(page: Page) {
   await input.press('ControlOrMeta+Home');
   return input;
 }
+
+test('page setup on page one updates the first section without source IDs', async ({ page }, info) => {
+  await open(page, true);
+  await page.getByRole('menubar').getByRole('menuitem', { name: 'File', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Page setup', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Page Setup', exact: true });
+  await expect(dialog).toBeVisible();
+  await dialog.locator('input[type=number]').nth(2).fill('2');
+  await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+  const xml = await savedXml(page, info);
+  const sections = xml.match(/<w:sectPr\b[^>]*>[\s\S]*?<\/w:sectPr>/g)!;
+  expect(sections).toHaveLength(2);
+  expect(sections[0]).toContain('w:left="2880"');
+  expect(sections[1]).toContain('w:left="1440"');
+});
 
 async function savedXml(page: Page, info: TestInfo, part = 'word/document.xml') {
   const downloading = page.waitForEvent('download');

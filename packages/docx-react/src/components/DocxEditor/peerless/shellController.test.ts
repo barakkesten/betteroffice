@@ -23,6 +23,27 @@ function fixture(presentedThroughSeq = 0) {
   return { controller, binding, viewStore, flush, read };
 }
 
+test('font selection prepares measurement before formatting and rejects replacement', async () => {
+  const { controller, binding, viewStore } = fixture();
+  const state = viewStore.getSnapshot();
+  viewStore.acceptWorkerState(state.identity, { ...state, epoch: 1, selection: null,
+    editState: { ...state.editState!, toolbar: PLAIN_CONTEXT } });
+  const order: string[] = [];
+  const format = mock(() => { order.push('format'); return { status: 'submitted', ticket: { ack: Promise.resolve({ status: 'applied' }) } }; });
+  const fonts = { faces: [], families: ['Times New Roman'], chains: { 'times new roman|0|0': [0] } };
+  const submit = mock(() => { order.push('environment'); return { status: 'submitted', ticket: { ack: Promise.resolve({ status: 'noop' }) } }; });
+  binding.commands = { format, submit } as never;
+  const prepareFontFamily = mock(async (family: string): Promise<typeof fonts | void> => { order.push(family); return fonts; });
+  controller.update({ read: async () => ({} as never), focus() {}, zoom: 1, prepareFontFamily });
+  controller.attach(binding);
+  expect(await controller.commands.store.execute('fontFamily', { family: 'Times New Roman' })).toMatchObject({ ok: true });
+  expect(order).toEqual(['Times New Roman', 'environment', 'format']);
+  expect(submit).toHaveBeenCalledWith({ kind: 'setFontEnvironment', payload: fonts }, { fence: true });
+  prepareFontFamily.mockImplementation(async () => { controller.detach(binding); });
+  expect(await controller.commands.store.execute('fontFamily', { family: 'Arial' })).toMatchObject({ ok: false });
+  expect(format).toHaveBeenCalledTimes(1);
+});
+
 test('preview remains read-only until the command frame is presented', () => {
   const { controller, binding, viewStore } = fixture(-1);
   controller.opening();

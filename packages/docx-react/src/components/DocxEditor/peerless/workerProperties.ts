@@ -9,7 +9,7 @@ export async function readWorkerSection(controller: WorkerShellController): Prom
   const page = controller.getSnapshot().view?.geometry?.pages.find(page => page.page.pageIndex === controller.ref.getCurrentPage() - 1);
   const source = parts.value.metadata.body.sections ?? [];
   const index = page?.displayPage?.sectionIndex;
-  const section = index !== undefined && index < source.length - 1 ? source[index]?.id ?? 'final' : 'final';
+  const section = index !== undefined && index >= 0 && index < source.length - 1 ? source[index]?.id ?? String(index) : 'final';
   return controller.query({ kind: 'properties', target: { kind: 'section', section } });
 }
 

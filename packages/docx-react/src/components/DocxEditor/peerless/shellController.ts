@@ -1,6 +1,6 @@
 import { createT, deepMerge, en, type LocaleStrings } from '@betteroffice/docx-i18n';
 import { WASM32_MEMORY_LIMIT_BYTES, type ResidentEngineWorkerClient, type ResidentEngineWorkerFrame,
-  type ResidentFontEnvironmentEvent, type WasmModuleMemory } from '@betteroffice/docx/yrs';
+  type ResidentFontEnvironment, type ResidentFontEnvironmentEvent, type WasmModuleMemory } from '@betteroffice/docx/yrs';
 import { normalizeFontFamilies } from '@betteroffice/docx/utils/fontOptions';
 import { DEFAULT_FONTS } from '../../ui/FontPicker';
 import { getPrimaryFontFamily } from '../../ui/fontPickerValue';
@@ -44,6 +44,7 @@ interface Options extends Pick<DocxEditorProps, 'i18n' | 'theme' | 'mode' | 'rea
   scrollToPage?(number: number): void;
   scrollToParagraph?(paraId: string): Promise<boolean>;
   perform?(id: DocxCommandId, args: unknown): Promise<DocxCommandResult>;
+  prepareFontFamily?(family: string): Promise<ResidentFontEnvironment | void>;
 }
 
 export function createPeerlessShellController(initial: Options) {
@@ -205,6 +206,16 @@ export function createPeerlessShellController(initial: Options) {
       }
       if (id === 'fontFamily' || id === 'fontSize') {
         const current = ready();
+        if (id === 'fontFamily') {
+          const fonts = await options.prepareFontFamily?.((args as { family: string }).family);
+          if (current !== binding) return { ok: false, failure: { code: 'document-replaced', message: 'Document was replaced.' } };
+          if (fonts) {
+            try {
+              const prepared = await settleCommand(current, current.commands.submit({ kind: 'setFontEnvironment', payload: fonts }, { fence: true }));
+              if (!prepared.ok) return prepared;
+            } finally { fonts.faces.length = 0; }
+          }
+        }
         const delta = id === 'fontFamily' ? { fontFamily: { ascii: (args as { family: string }).family, hAnsi: (args as { family: string }).family } } :
           { fontSize: (args as { points: number }).points };
         return settleCommand(current, current.commands.format({ kind: 'formatRange', payload: { delta } }, { fence: true }));

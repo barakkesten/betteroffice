@@ -128,7 +128,9 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
       throw error;
     } finally { if (printCapture.current === capture) printCapture.current = null; }
   }, [props.onPrint, props.onError]);
-  const controllerOptions = { ...props, zoom, focus, read, readAt, save, loadBuffer, print, onZoom: setZoom, isDark };
+  const prepareFontFamily = useRef<(family: string) => Promise<ResidentFontEnvironment>>(async () => { throw new Error('Worker fonts are unavailable'); });
+  const controllerOptions = { ...props, zoom, focus, read, readAt, save, loadBuffer, print, onZoom: setZoom, isDark,
+    prepareFontFamily: (family: string) => prepareFontFamily.current(family) };
   const [controller] = useState(() => createPeerlessShellController(controllerOptions));
   const [search] = useState(() => createWorkerSearch(controller, (rect) => {
     const element = scroller.current;
@@ -460,6 +462,31 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
       if (fontJob.current === job) fontJob.current = null;
     });
   }, []);
+  prepareFontFamily.current = async family => {
+    const current = active.current;
+    const client = worker.current;
+    const opened = fontSource.current;
+    if (!current || !client || !opened) throw new Error('Worker fonts are unavailable');
+    fontAbort.current?.abort();
+    fontJob.current = null;
+    const abort = new AbortController();
+    fontAbort.current = abort;
+    await current.binding.admission.whenCompositionSettled?.();
+    await current.binding.session.flush();
+    abort.signal.throwIfAborted();
+    const requirements = JSON.parse(await client.fontRequirements(opened.layoutInput)) as ResidentFontRequirement[];
+    for (const bold of [false, true]) for (const italic of [false, true]) {
+      const key = `${family.toLowerCase()}|${bold ? 1 : 0}|${italic ? 1 : 0}`;
+      if (!requirements.some(entry => entry.key === key)) requirements.push({ key, family, bold, italic });
+    }
+    const embedded = await extractEmbeddedFontFaces(opened.document);
+    const payload = await prepareWorkerFontEnvironment({ fonts: settings.current.fonts,
+      provider: settings.current.measurementFontProvider, embedded, requirements, families: [...opened.families, family],
+      compat: opened.document.package.settings?.compatibilityFlags, signal: abort.signal });
+    if (active.current !== current || fontSource.current !== opened || worker.current !== client) throw new Error('Document was replaced');
+    abort.signal.throwIfAborted();
+    return payload;
+  };
   const onReady = useCallback((binding: PeerlessEditSessionBinding) => {
     controller.attach(binding);
     if (active.current?.binding !== binding) {
