@@ -681,6 +681,7 @@ export function PptxEditorContent({
   fonts,
   clientId,
   collaboration,
+  collaborationIdentity,
   className,
   fileName,
   initialSlide,
@@ -699,6 +700,7 @@ export function PptxEditorContent({
   backend,
   onWorkerReady,
 }: Omit<PptxInThreadEditorProps, 'experimentalWorkerOpen'> & {
+  collaborationIdentity?: object;
   backend?: (changed: () => void) => EditablePresentation;
   onWorkerReady?: (api: PptxWorkerEditorApi) => void;
 }) {
@@ -1393,6 +1395,7 @@ export function PptxEditorContent({
     applyBatch,
     beginPluginLoad,
     collaborationClientId,
+    collaborationIdentity,
     collaborationInitialUpdate,
     clearSelection,
     commandStore,
