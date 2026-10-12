@@ -11,7 +11,7 @@ export type PeerlessTextIntent = {
 type PeerlessPropertyKind = 'setHyperlink' | 'setSectionProperties' | 'setWatermark';
 export type PeerlessPropertyIntent = { [K in PeerlessPropertyKind]: { kind: K; payload: DocxCommandPayloads[K] } }[PeerlessPropertyKind];
 
-export type PeerlessInputIntent = PeerlessPropertyIntent | PeerlessSelectionIntent | PeerlessTextIntent | { kind: 'undo' | 'redo'; payload: Record<string, never> } | { kind: 'replaceMatches'; payload: DocxCommandPayloads['replaceMatches'] } | { kind: 'setRenderEnvironment'; payload: DocxCommandPayloads['setRenderEnvironment'] };
+export type PeerlessInputIntent = PeerlessPropertyIntent | PeerlessSelectionIntent | PeerlessTextIntent | { kind: 'undo' | 'redo'; payload: Record<string, never> } | { kind: 'replaceMatches'; payload: DocxCommandPayloads['replaceMatches'] } | { [K in 'setRenderEnvironment' | 'setFontEnvironment']: { kind: K; payload: DocxCommandPayloads[K] } }['setRenderEnvironment' | 'setFontEnvironment'];
 
 const implicitVerticalGoals = new WeakSet<PeerlessInputIntent>();
 

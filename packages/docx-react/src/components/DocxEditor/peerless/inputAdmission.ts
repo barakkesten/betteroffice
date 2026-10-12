@@ -216,7 +216,7 @@ export function createInputAdmission(_options: PeerlessInputAdmissionOptions): P
     deletionExtension = false
   ): PeerlessAdmissionResult => {
     if (disposed) throw new Error('Input admission is disposed');
-    const environment = intent.kind === 'setRenderEnvironment';
+    const environment = intent.kind === 'setRenderEnvironment' || intent.kind === 'setFontEnvironment';
     if (readOnly() && !environment && (!isSelection(intent) || deletionExtension)) {
       if (counted) originalUnackedIntents -= 1;
       return { status: 'ignored', reason: 'read-only' };
