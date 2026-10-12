@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DocxEditor, type DocxEditorRef } from "@betteroffice/docx-react";
 import { XlsxEditor, type XlsxEditorApi } from "@betteroffice/xlsx-react";
-import { PptxEditor, type PptxEditorApi } from "@betteroffice/pptx-react";
+import { PptxEditor, type PptxAsyncEditorApi } from "@betteroffice/pptx-react";
 import { configureDefaultFonts } from "@betteroffice/docx/layout";
 import { setGoogleFontsEnabled } from "@betteroffice/docx/utils";
 import { CollaborationProvider as DocxProvider } from "@betteroffice/docx/collaboration";
@@ -9,7 +9,8 @@ import { CollaborationProvider as XlsxProvider } from "@betteroffice/xlsx/collab
 import {
   CollaborationProvider as PptxProvider,
   type PptxFontFace,
-} from "@betteroffice/pptx";
+  type AsyncCollaborationReplica,
+} from "@betteroffice/pptx/editor";
 import {
   loadBundledFontBytes,
   resolveLastResortFace,
@@ -45,8 +46,6 @@ export async function prepareFile(
     openWorkbook(bytes).dispose();
     return { bytes, format };
   }
-  const { initWasm, openPresentation } = await import("@betteroffice/pptx");
-  await initWasm();
   const fonts = await Promise.all(
     [false, true].flatMap((bold) =>
       [false, true].map(async (italic) => {
@@ -62,7 +61,15 @@ export async function prepareFile(
       })
     )
   );
-  openPresentation(bytes, { fonts }).dispose();
+  if (typeof Worker === "function" && typeof OffscreenCanvas === "function") {
+    const { openPresentationSession } = await import("@betteroffice/pptx/editor");
+    const session = await openPresentationSession(bytes, { fonts });
+    await session.dispose();
+  } else {
+    const { initWasm, openPresentation } = await import("@betteroffice/pptx/editor");
+    await initWasm();
+    openPresentation(bytes, { fonts }).dispose();
+  }
   return { bytes, format, fonts };
 }
 
@@ -101,11 +108,12 @@ export default function Editor({
   const serializations = useRef<Promise<unknown>>(Promise.resolve());
   const docx = useRef<DocxEditorRef>(null);
   const xlsx = useRef<XlsxEditorApi | null>(null);
-  const pptx = useRef<PptxEditorApi | null>(null);
+  const pptx = useRef<PptxAsyncEditorApi | null>(null);
   const clientId = useRef(
     crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff || 1
   ).current;
   const [replica, setReplica] = useState<CollaborationReplica | null>(null);
+  const [presentationReplica, setPresentationReplica] = useState<AsyncCollaborationReplica | null>(null);
   const [provider, setProvider] = useState<
     DocxProvider | XlsxProvider | PptxProvider | null
   >(null);
@@ -113,7 +121,7 @@ export default function Editor({
   callbacks.current = { onSave, onChange, onError, onStatus };
 
   useEffect(() => {
-    if (!room || !replica) return;
+    if (!room || (file.format === "pptx" ? !presentationReplica : !replica)) return;
     const transport = createRoomTransport(
       "https://betteroffice-collaboration-relay.elia7.workers.dev",
       room.id
@@ -121,10 +129,10 @@ export default function Editor({
     const options = { user: { name: room.name } };
     const next =
       file.format === "docx"
-        ? new DocxProvider(replica, transport, options)
+        ? new DocxProvider(replica!, transport, options)
         : file.format === "xlsx"
-        ? new XlsxProvider(replica, transport, options)
-        : new PptxProvider(replica, transport, options);
+        ? new XlsxProvider(replica!, transport, options)
+        : new PptxProvider(presentationReplica!, transport, options);
     setProvider(next);
     const unsubscribe = next.onStatus(({ status, synced }) =>
       callbacks.current.onStatus(synced ? "Connected" : status)
@@ -139,7 +147,7 @@ export default function Editor({
       next.destroy();
       setProvider(null);
     };
-  }, [file.format, replica, room]);
+  }, [file.format, replica, presentationReplica, room]);
 
   const changed = useCallback(() => callbacks.current.onChange(), []);
   const saveBytes = useCallback(
@@ -161,8 +169,9 @@ export default function Editor({
     },
     [changed]
   );
-  const presentationReady = useCallback((api: PptxEditorApi) => {
+  const presentationReady = useCallback((api: PptxAsyncEditorApi) => {
     pptx.current = api;
+    return () => { pptx.current = null; };
   }, []);
 
   useEffect(() => {
@@ -189,7 +198,7 @@ export default function Editor({
                 ? await docx.current?.save()
                 : file.format === "xlsx"
                 ? xlsx.current?.handle.save()
-                : pptx.current?.save();
+                : await pptx.current?.saveAsync();
             return savedBytes(bytes, current.failure);
           } finally {
             serialization.current = null;
@@ -266,7 +275,7 @@ export default function Editor({
         room
           ? {
               clientId,
-              onReplica: setReplica,
+              onReplica: setPresentationReplica,
               presence: provider instanceof PptxProvider ? provider : undefined,
             }
           : undefined
