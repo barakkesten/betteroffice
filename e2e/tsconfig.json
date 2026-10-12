@@ -20,7 +20,15 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "noUnusedParameters": true,
+    "paths": {
+      "@betteroffice/docx/peerless": [
+        "../packages/docx/src/peerless.ts"
+      ],
+      "@betteroffice/docx-react/peerless-harness": [
+        "../packages/docx-react/src/components/DocxEditor/peerless/browserHarness.ts"
+      ]
+    }
   },
   "include": [
     "./**/*.ts"
