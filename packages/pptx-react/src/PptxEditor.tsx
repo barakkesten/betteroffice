@@ -267,6 +267,8 @@ export interface PptxWorkerViewerApi extends Omit<
 }
 
 export interface PptxAsyncCollaborationOptions extends Omit<PptxEditorCollaborationOptions, 'onReplica'> {
+  /** Change to open a different collaboration room. */
+  roomId?: string;
   onReplica?: (replica: import('@betteroffice/pptx').AsyncCollaborationReplica | null) => void;
 }
 
@@ -328,7 +330,11 @@ export type PptxWorkerViewerProps = Omit<
   onReady?: (api: PptxWorkerViewerApi) => void;
 };
 
-export type PptxAsyncEditorProps = Omit<PptxInThreadEditorProps, 'onReady' | 'collaboration' | 'experimentalWorkerOpen'> & {
+export type PptxAsyncEditorProps = Omit<PptxInThreadEditorProps,
+  'onReady' | 'collaboration' | 'experimentalWorkerOpen' | keyof PptxEditorPluginProps> & {
+  plugins?: never;
+  pluginGrants?: never;
+  onPluginError?: never;
   /** @internal */
   [PEERLESS_FLAG]?: true;
   /** @deprecated Removed in 0.6.0. Omit for the async editor. */
@@ -619,6 +625,15 @@ function PptxAsyncEditorSession(props: PptxAsyncEditorProps) {
   const engine = choice.identity === identity ? choice : start();
   if (choice !== engine) setChoice(engine);
   useEffect(() => { if (engine.reason) warnPptxEngine(engine.reason); }, [engine.reason]);
+  const unsupportedPlugins = !engine.reason && ((props as PptxEditorPluginProps).plugins?.length ?? 0) > 0;
+  const pluginError = useMemo(() => new Error(`PptxEditor plugins require ${LEGACY_SYNC_API}={true}.`), []);
+  const reportedPlugins = useRef(false);
+  useEffect(() => {
+    if (!unsupportedPlugins || reportedPlugins.current) return;
+    reportedPlugins.current = true;
+    try { props.onError?.(pluginError); } catch {}
+  }, [unsupportedPlugins, pluginError, props.onError]);
+  if (unsupportedPlugins) return <PeerlessEditorError error={pluginError} className={props.className} />;
   return <PeerlessEditorBoundary onError={props.onError} className={props.className}>
     <Suspense fallback={<div className={props.className} role="status">{t('worker.preparing')}</div>}>
       {engine.reason ? <PptxAsyncInThreadSession {...props} /> : <PeerlessPptxSurface {...props} />}

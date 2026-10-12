@@ -1,8 +1,10 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { afterAll, afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test';
-import type { PeerlessSession, PresentationCommandClient } from '@betteroffice/pptx';
+import type { PeerlessSession, PptxPresence, PresentationCommandClient } from '@betteroffice/pptx';
 import { PptxEditor } from '../PptxEditor';
 import { peerlessSessionOpener } from './usePeerlessPresentation';
+import { definePptxPlugin } from '../plugins/definePptxPlugin';
+import type { PptxAsyncEditorProps } from '../PptxEditor';
 
 const ownsDom = !GlobalRegistrator.isRegistered;
 if (ownsDom) GlobalRegistrator.register();
@@ -46,6 +48,41 @@ test('default collaboration reaches worker startup', async () => {
   expect(opener).toHaveBeenCalledWith(file, expect.objectContaining({ collaboration: { clientId: 1 } }));
   expect(onError).not.toHaveBeenCalled();
   expect(view.queryByRole('alert')).toBeNull();
+});
+
+test('collaboration identity tracks room, client and initial bytes while callbacks and presence stay live', async () => {
+  const { owner, opener } = openingSession();
+  const options = { roomId: 'first', clientId: 1, initialUpdate: Uint8Array.of(1) };
+  const view = render(<PptxEditor fonts={[]} file={file} collaboration={options} />);
+  await waitFor(() => expect(opener).toHaveBeenCalledTimes(1));
+  view.rerender(<PptxEditor fonts={[]} file={file} collaboration={{ ...options,
+    initialUpdate: Uint8Array.of(1), onReplica: () => {}, presence: {} as PptxPresence }} />);
+  expect(opener).toHaveBeenCalledTimes(1);
+  expect(owner.dispose).not.toHaveBeenCalled();
+  view.rerender(<PptxEditor fonts={[]} file={file} collaboration={{ ...options, roomId: 'second' }} />);
+  expect(opener).toHaveBeenCalledTimes(2);
+  view.rerender(<PptxEditor fonts={[]} file={file} collaboration={{ ...options, roomId: 'second', clientId: 2 }} />);
+  expect(opener).toHaveBeenCalledTimes(3);
+  view.rerender(<PptxEditor fonts={[]} file={file} collaboration={{ ...options, roomId: 'second', clientId: 2,
+    initialUpdate: Uint8Array.of(2) }} />);
+  expect(opener).toHaveBeenCalledTimes(4);
+  view.rerender(<PptxEditor fonts={[]} file={file} />);
+  expect(opener).toHaveBeenCalledTimes(5);
+  expect(owner.dispose).toHaveBeenCalledTimes(4);
+});
+
+test('untyped default plugins report the legacy opt-in once and block unsupported startup', async () => {
+  const { opener } = openingSession();
+  const onError = mock((_error: Error) => {});
+  const plugin = definePptxPlugin({ id: 'review', createState: () => ({}) });
+  const props = { fonts: [], file, plugins: [plugin], onError } as unknown as PptxAsyncEditorProps;
+  const view = render(<PptxEditor {...props} />);
+  await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+  expect(onError.mock.calls[0][0].message).toContain('legacySyncApi');
+  expect(view.getByRole('alert').textContent).toContain('legacySyncApi');
+  view.rerender(<PptxEditor {...props} onError={(error) => onError(error)} />);
+  expect(onError).toHaveBeenCalledTimes(1);
+  expect(opener).not.toHaveBeenCalled();
 });
 
 test('switching to legacy sync disposes a pending worker session', async () => {

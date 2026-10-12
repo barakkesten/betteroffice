@@ -25,12 +25,33 @@ test('default and in-thread async props preserve async contextual APIs', () => {
     <PptxEditor fonts={[]} experimentalWorkerOpen={false} onReady={(api) => {
       assertType<Equal<typeof api, PptxAsyncEditorApi>>();
     }} />,
-    <PptxEditor fonts={[]} readOnly plugins={[]} onChange={() => {}} onReady={(api) => {
+    <PptxEditor fonts={[]} readOnly onChange={() => {}} onReady={(api) => {
       assertType<Equal<typeof api, PptxAsyncEditorApi>>();
     }} />,
     <PptxEditor fonts={[]} collaboration={{ clientId: 1, onReplica: (replica) => {
       assertType<Equal<typeof replica, AsyncCollaborationReplica | null>>();
     } }} />,
+  ];
+  expect(check).toBeFunction();
+});
+
+test('plugin props require the legacy opt-in, including through the props union', () => {
+  const check = () => [
+    // @ts-expect-error
+    <PptxEditor fonts={[]} plugins={[]} />,
+    // @ts-expect-error
+    <PptxEditor fonts={[]} pluginGrants={{}} />,
+    // @ts-expect-error
+    <PptxEditor fonts={[]} onPluginError={() => {}} />,
+    // @ts-expect-error
+    <PptxEditor fonts={[]} experimentalWorkerOpen={false} plugins={[]} />,
+    // @ts-expect-error
+    { fonts: [], plugins: [] } satisfies PptxEditorProps,
+    // @ts-expect-error
+    { fonts: [], pluginGrants: {} } satisfies PptxEditorProps,
+    // @ts-expect-error
+    { fonts: [], onPluginError: () => {} } satisfies PptxEditorProps,
+    <PptxEditor legacySyncApi fonts={[]} plugins={[]} pluginGrants={{}} onPluginError={() => {}} />,
   ];
   expect(check).toBeFunction();
 });

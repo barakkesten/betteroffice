@@ -199,7 +199,12 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
           return;
         }
       }
-    })().catch(() => {});
+    })().catch((cause: unknown) => {
+      if (!current || !presentation.current || presentation.failure) return;
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      console.error('[PptxEditor] onReady failed', error);
+      try { callbacks.current.onError?.(error); } catch {}
+    });
     return () => { current = false; api.current = null; if (typeof cleanup === 'function') cleanup(); };
   }, [presentation, focus, commands]);
   useEffect(() => {
