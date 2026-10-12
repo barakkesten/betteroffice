@@ -11,6 +11,8 @@ import { EditorToolbar } from '../components/EditorToolbar';
 import { EditorChromeContext } from '../components/EditorToolbarContext';
 import { useTranslation } from '../i18n';
 import { PeerlessSlideStrip } from './PeerlessSlideStrip';
+import { PeerlessNotes } from './PeerlessNotes';
+import { PeerlessRecovery } from './PeerlessRecovery';
 import { PeerlessPresence } from './PeerlessPresence';
 import { peerlessObjectCommand } from './peerlessObjectCommands';
 import { createPeerlessReplica } from './peerlessCollaboration';
@@ -196,6 +198,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
     {(!props.file || !presentation || empty || failure) && <div role="status" data-testid="pptx-worker-status" style={{ position: 'absolute' }}>
       {failure?.message ?? t(!props.file ? 'editor.openPrompt' : empty ? 'editor.noSlides' : 'worker.preparing')}
     </div>}
+    {presentation && failure && <PeerlessRecovery run={presentation} fileName={props.fileName} />}
     <div style={styles.workspace}>
       <PeerlessImagePicker input={picker} origin={pictureOrigin} onError={(error) => callbacks.current.onError?.(error)} />
       {chrome && slides && slides.length > 0 && <PeerlessSlideStrip run={chrome} previewFit={previewFit} current={current}
@@ -227,6 +230,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
         {presentation && <Overlays run={presentation} commands={commands} preview={shapes.preview} onError={props.onError} />}
       </div>
     </div>
+    {presentation && <PeerlessNotes run={presentation} onError={(error) => callbacks.current.onError?.(error)} />}
   </div></PptxCommandContext.Provider>;
 }
 

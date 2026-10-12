@@ -1,7 +1,7 @@
 import { createPeerlessSession, presentationSharedInputs, PRESENTATION_COMMAND_ADMISSION } from '@betteroffice/pptx/peerless';
 import { sizeCanvasForSlide, PptxWorkerEditorDisposedError, PptxWorkerEditorFailedError } from '@betteroffice/pptx/editor';
 import type {
-  DeckSnapshot, PptxFontFace, PeerlessSession, PresentationCommandClient, PresentationCommandFrame,
+  DeckSnapshot, PptxFontFace, PeerlessSession, PresentationCommandClient, PresentationCommandFrame, PresentationCommandAck,
 } from '@betteroffice/pptx';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
@@ -53,6 +53,8 @@ export interface PeerlessPresentation {
   fit(value: SlideFit): void;
   installFont(face: PptxFontFace): Promise<void>;
   setReadOnly(readOnly: boolean): void;
+  setChangeObserver(enabled: boolean): void;
+  recover(): Promise<{ bytes: Uint8Array; recovery: true; throughSeq: number; version: string }>;
 }
 
 export function usePeerlessPresentation(
@@ -82,6 +84,7 @@ export function usePeerlessPresentation(
     const surface = canvas.current;
     let alive = true;
     let session: PeerlessSession | undefined;
+    let observedChanges = Boolean(callbacks.current.onChange);
     let base: PeerlessViewStore | undefined;
     let run: PeerlessPresentation | undefined;
     let framePainter: ReturnType<typeof createCommandFramePainter> | undefined;
@@ -97,6 +100,9 @@ export function usePeerlessPresentation(
     let cancelIdle: (() => void) | undefined;
     let draining = false;
     let changeSeq: number | undefined;
+    let changeEvent: PresentationCommandAck['change'];
+    let checkpointTimer: ReturnType<typeof setTimeout> | undefined;
+    let checkpoint = { bytes: props.file instanceof Uint8Array ? props.file.slice() : new Uint8Array(props.file).slice(), throughSeq: 0, version: '' };
     let firstPainted = false;
     let published = false;
     let paintedFrame: PresentationCommandFrame | undefined;
@@ -134,6 +140,7 @@ export function usePeerlessPresentation(
       if (!current()) return;
       fatal = cause instanceof PptxWorkerEditorFailedError ? cause : new PptxWorkerEditorFailedError(cause);
       cancelIdle?.(); cancelIdle = undefined;
+      clearTimeout(checkpointTimer); checkpointTimer = undefined;
       framePainter?.freeze();
       if (framePainter !== displayedPainter) framePainter?.dispose();
       echoPainter?.dispose(); echoPainter = undefined;
@@ -233,6 +240,20 @@ export function usePeerlessPresentation(
       });
     }
 
+    async function saveCheckpoint(client: PresentationCommandClient): Promise<void> {
+      await base?.fence(); await whenPainted();
+      if (!current()) return;
+      const result = await client.checkpoint?.();
+      if (current() && result && result.throughSeq === client.state.throughSeq && result.version === client.state.version) {
+        checkpoint = { bytes: new Uint8Array(result.bytes).slice(), throughSeq: result.throughSeq, version: result.version };
+      }
+    }
+
+    function scheduleCheckpoint(client: PresentationCommandClient): void {
+      clearTimeout(checkpointTimer);
+      checkpointTimer = setTimeout(() => { checkpointTimer = undefined; void saveCheckpoint(client).catch(report); }, 1000);
+    }
+
     async function drain(client: PresentationCommandClient): Promise<void> {
       if (!base || !current()) return;
       await whenPainted();
@@ -242,15 +263,25 @@ export function usePeerlessPresentation(
           await base.fence();
           if (!current()) return;
           await whenPainted();
+          const event = changeEvent;
+          if (event) {
+            if (event.throughSeq <= client.state.throughSeq && event.version === client.state.version) {
+              try { callbacks.current.onChange?.(event.snapshot); } catch {}
+            }
+            if (changeEvent === event) changeEvent = undefined;
+            if (changeSeq !== undefined && changeSeq <= event.throughSeq) changeSeq = undefined;
+          } else {
           const reply = await client.read();
           if (!current()) return;
           await whenPainted();
           if (reply.result.ok) {
-            const snapshot: DeckSnapshot = { widthEmu: client.state.size.width,
+            const snapshot: DeckSnapshot = client.access ? await client.access('snapshot') : { widthEmu: client.state.size.width,
               heightEmu: client.state.size.height, slides: reply.result.slides };
+            if (!current()) return;
             try { callbacks.current.onChange?.(snapshot); } catch {}
           }
           if (changeSeq !== undefined && changeSeq <= reply.throughSeq) changeSeq = undefined;
+          }
         }
       }
       if (!current()) return;
@@ -287,7 +318,7 @@ export function usePeerlessPresentation(
     try {
       session = peerlessSessionOpener.open(props.file, {
         fonts, clientId: props.clientId, collaboration: props.collaboration,
-        readOnly: mode.current,
+        readOnly: mode.current, observeChanges: observedChanges,
         activeSlideIndex: Number.isInteger(props.initialSlide) ? Math.max(0, props.initialSlide! - 1) : 0,
       });
       disposers.push(session.subscribeFailure(report));
@@ -421,7 +452,8 @@ export function usePeerlessPresentation(
           for (const id of base!.getSnapshot().dirtyThumbnailIds) {
             if (!vanished.has(id) && !dirty.has(id)) dirty.set(id, 0);
           }
-          if (callbacks.current.onChange && ack.outcomes.some((outcome) => outcome.committed)) changeSeq = ack.throughSeq;
+          if (ack.outcomes.some((outcome) => outcome.committed)) scheduleCheckpoint(client);
+          if (callbacks.current.onChange && ack.outcomes.some((outcome) => outcome.committed)) { changeSeq = ack.throughSeq; changeEvent = ack.change; }
           schedule(client);
         }));
         const subscribeVisual = (listener: () => void) => {
@@ -439,6 +471,17 @@ export function usePeerlessPresentation(
           get hydrated() { return hydrated(); },
           get failure() { return fatal; },
           require, setReadOnly,
+          setChangeObserver(enabled) {
+            if (!current() || observedChanges === enabled) return;
+            observedChanges = enabled;
+            void store.dispatch({ kind: 'setChangeObserver', payload: { enabled, inputTime: performance.now(), undoGroup: 'observer' } }).catch(report);
+          },
+          async recover() {
+            if (!currentFile()) throw new PptxWorkerEditorDisposedError();
+            if (!fatal) await saveCheckpoint(client);
+            if (!currentFile()) throw new PptxWorkerEditorDisposedError();
+            return { ...checkpoint, bytes: checkpoint.bytes.slice(), recovery: true };
+          },
           async installFont(face) {
             require();
             await installFonts([face], installedFonts, current);
@@ -529,10 +572,17 @@ export function usePeerlessPresentation(
       images.dispose();
       pendingMedia.clear();
       for (const face of installedFonts) document.fonts.delete(face);
+      clearTimeout(checkpointTimer);
       visualListeners.clear(); failureListeners.clear();
       if (!fatal) void session?.dispose().catch(() => {});
     };
   }, [fileGeneration, canvas]);
+
+  useLayoutEffect(() => {
+    const run = presentation?.fileGeneration === fileGeneration ? presentation : null;
+    if (!run?.current) return;
+    run.setChangeObserver(Boolean(props.onChange));
+  }, [presentation, fileGeneration, Boolean(props.onChange)]);
 
   return { presentation: presentation?.fileGeneration === fileGeneration ? presentation : null,
     pending: pending?.fileGeneration === fileGeneration ? pending : null, failure };

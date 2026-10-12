@@ -25,6 +25,7 @@ let client: PresentationCommandClient;
 let commands: PresentationCommandEnvelope[];
 let owner: PeerlessSession | undefined;
 let holding = false;
+let unknownNext = false;
 let held: unknown[] = [];
 let releaseReplies = () => {};
 let suspensions = 0;
@@ -73,7 +74,7 @@ beforeEach(() => {
   });
   restorers.push(() => toolbarRect.mockRestore());
   commands = [];
-  holding = false; held = []; suspensions = 0;
+  holding = false; unknownNext = false; held = []; suspensions = 0;
 
   owner = undefined;
   const worker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
@@ -124,16 +125,28 @@ beforeEach(() => {
     releaseReplies = () => { holding = false; for (const message of held.splice(0)) (message as () => void)(); };
     const off = pair.client.listen((message) => {
       const reply = message as { kind: string; id: number };
+      if (unknownNext && reply.kind === 'reply' && commandIds.has(reply.id)) {
+        unknownNext = false;
+        deliver({ ...reply, ok: false, error: { name: 'CommandOutcomeUnknown', message: 'Edit outcome is unknown', refusal: { seq: client.state.throughSeq + 1 } } });
+        return;
+      }
       if (holding && reply.kind === 'reply' && commandIds.has(reply.id)) held.push(() => { deliver(message); });
       else deliver(message);
     });
     restorers.push(off);
     const font = readFile(new URL('../../../../crates/ooxml-text/tests/fonts/LiberationSans-Regular.ttf', import.meta.url));
-    const value = font.then((font) => createPeerlessSession(bytes, { readOnly: options.readOnly,
+    let actual: PeerlessSession | undefined;
+    const value = font.then((font) => createPeerlessSession(bytes, { readOnly: options.readOnly, observeChanges: options.observeChanges,
       activeSlideIndex: options.activeSlideIndex, collaboration: options.collaboration, clientId: options.clientId, worker: () => endpoint as unknown as Worker,
-      fonts: [{ family: 'Liberation Sans', bytes: new Uint8Array(font) }] }));
+      fonts: [{ family: 'Liberation Sans', bytes: new Uint8Array(font) }] })).then((session) => { actual = session; return session; });
     owner = { ready: bounded(value.then((session) => session.ready)).then((value) => { client = value; return value; }),
-      failure: undefined, subscribeFailure: () => () => {},
+      get failure() { return actual?.failure; },
+      subscribeFailure(listener) {
+        let live = true;
+        let off: (() => void) | undefined;
+        void value.then((session) => { if (live) off = session.subscribeFailure(listener); });
+        return () => { live = false; off?.(); };
+      },
       dispose: async () => { await (await value).dispose(); registration.dispose(); } };
     return owner;
   });
@@ -192,3 +205,5 @@ export function type(input: HTMLElement, text: string): void {
 }
 
 export const replyControl = { hold() { holding = true; }, count() { return held.length; }, release() { releaseReplies(); } };
+
+export const faultControl = { unknown() { unknownNext = true; } };

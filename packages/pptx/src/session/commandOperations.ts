@@ -6,6 +6,24 @@ export function prepareCommandOperation(handle: PresentationHandle, mutation: Pr
   if (!mutation || !Array.isArray(mutation.args) || mutation.args.length > 4) return null;
   const { method, args } = mutation;
   const snapshot = handle.snapshot();
+  const text = (value: unknown, limit = 1e6): value is string => typeof value === 'string' && value.length <= limit;
+  const position = (value: unknown): value is { xEmu: number; yEmu: number } => Boolean(value && typeof value === 'object' &&
+    ['xEmu', 'yEmu'].every((key) => Number.isSafeInteger((value as Record<string, unknown>)[key])));
+  const commentDraft = (value: unknown) => Boolean(value && typeof value === 'object' &&
+    text((value as Record<string, unknown>).author, 1024) && text((value as Record<string, unknown>).text) &&
+    text((value as Record<string, unknown>).created, 128) && Number.isFinite(Date.parse((value as { created: string }).created)) &&
+    ((value as { initials?: string }).initials === undefined || text((value as { initials: string }).initials, 128)));
+  if (method === 'setCommentFlavor') return ['legacy', 'modern'].includes(args[0]) && !snapshot.comments?.length ? () => handle.setCommentFlavor(args[0]) : null;
+  if (method === 'replyToComment' || method === 'setCommentStatus' || method === 'setCommentPosition' || method === 'removeComment') {
+    const comment = snapshot.comments?.find((comment) => comment.id === args[0]);
+    if (!comment) return null;
+    switch (method) {
+      case 'replyToComment': return snapshot.commentFlavor === 'modern' && !comment.parentId && commentDraft(args[1]) ? () => handle.replyToComment(comment.id, args[1]) : null;
+      case 'setCommentStatus': return snapshot.commentFlavor === 'modern' && typeof args[1] === 'boolean' ? () => handle.setCommentStatus(comment.id, args[1]) : null;
+      case 'setCommentPosition': return !comment.parentId && position(args[1]) ? () => handle.setCommentPosition(comment.id, args[1]) : null;
+      case 'removeComment': return () => handle.removeComment(comment.id);
+    }
+  }
   if (method === 'insertSlide') {
     const [index, layout] = args;
     if (!Number.isSafeInteger(index) || index < 0 || index > snapshot.slides.length ||
@@ -14,6 +32,12 @@ export function prepareCommandOperation(handle: PresentationHandle, mutation: Pr
   }
   const slide = snapshot.slides.find((slide) => slide.id === args[0]);
   if (!slide) return null;
+  if (method === 'setSlideNotes') return text(args[1]) ? () => handle.setSlideNotes(slide.id, args[1]) : null;
+  if (method === 'addComment') {
+    const draft = args[1];
+    return commentDraft(draft) && (draft.xEmu === undefined && draft.yEmu === undefined || position(draft))
+      ? () => handle.addComment(slide.id, draft) : null;
+  }
   if (method === 'deleteSlide') return () => handle.deleteSlide(slide.id);
   if (method === 'moveSlide') {
     const index = args[1];
