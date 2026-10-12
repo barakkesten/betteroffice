@@ -236,14 +236,14 @@ async function harnessText(page: Page) {
   ).map((node) => node.textContent ?? '').join(''), xml);
 }
 
-async function open(page: Page, peerless = true, contextBytes: number | null = null) {
+async function open(page: Page, peerless = true, contextBytes: number | null = null, pageCount = 1, buffer?: Buffer) {
   await installProbe(page);
   await page.goto(peerless ? '/?format=docx&peerless=1' : '/?format=docx');
   await page.evaluate((bytes) => { window.__docxPeerlessInput.contextBytes = bytes; }, contextBytes);
   await page.locator('input[type=file]').last().setInputFiles({
     name: 'peerless-input.docx',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    buffer: await documentBytes(),
+    buffer: buffer ?? await documentBytes(pageCount),
   });
   if (peerless) {
     const root = page.locator('[data-peerless-docx]');
@@ -260,6 +260,15 @@ function documentCanvas(page: Page, peerless = true) {
   return page.locator(peerless
     ? '[data-peerless-docx] [data-page-id] canvas'
     : '.canvas-page canvas').first();
+}
+
+async function setMode(page: Page, current: 'Editing' | 'Viewing', next: 'Editing' | 'Viewing') {
+  const controls = page.getByTestId('peerless-harness-mode');
+  if (await controls.isVisible()) await controls.getByRole('button', { name: next, exact: true }).click();
+  else {
+    await page.getByRole('button', { name: current, exact: true }).click();
+    await page.getByRole('menuitemradio', { name: new RegExp(`^${next}\\b`) }).click();
+  }
 }
 
 async function focusDocument(page: Page, peerless = true) {
@@ -404,6 +413,52 @@ test('d2d_typing_paste_formatting_share_chain', async ({ page }) => {
   expect(await savedText(page)).toBe('TPASTEBabcd');
 });
 
+test('save_includes_typing_deferred_after_vertical_navigation', async ({ page }) => {
+  await open(page);
+  const input = await focusDocument(page);
+  const start = await commandCount(page);
+  await page.evaluate(() => { window.__docxPeerlessInput.holdAcks = true; });
+  await beforeinput(input, 'x');
+  await input.press('ArrowUp');
+  await beforeinput(input, 'y');
+  const saving = savedText(page);
+  await paintTurns(page);
+  await page.evaluate(() => window.__docxPeerlessInput.releaseAcks());
+  expect(await saving).toContain('y');
+  const commands = await commandsSince(page, start);
+  expect(commands.map(({ kind }) => kind)).toEqual(['insertText', 'navigate', 'insertText']);
+  expectChain(commands);
+});
+
+test('keyboard_and_drag_ranges_have_visible_highlights', async ({ page }) => {
+  await open(page);
+  const input = await focusDocument(page);
+  await input.press('Shift+ArrowRight');
+  await settled(page);
+  const overlay = page.locator('[data-peerless-docx] div[aria-hidden="true"][style*="rgba(59, 130, 246"]');
+  await expect(overlay.first()).toBeVisible();
+  await input.press('ArrowRight');
+  await settled(page);
+  await expect(overlay).toHaveCount(0);
+  const initial = applyFrameDelta(null, decodeFrameDelta(Uint8Array.from(await page.evaluate(() =>
+    Array.from(new Uint8Array(window.__docxPeerlessInput.initial!.frame!.payload.frame))
+  ))));
+  const run = initial.pages[0]!.page.primitives.find((primitive) =>
+    primitive.kind === 'glyphRun' && !primitive.listMarker && primitive.glyphs.length > 0);
+  if (run?.kind !== 'glyphRun' || !run.glyphs.length) throw new Error('Document text has no rendered glyphs');
+  const bounds = await documentCanvas(page).boundingBox();
+  if (!bounds) throw new Error('Document canvas is unavailable');
+  const first = run.glyphs[0]!;
+  const last = run.glyphs.at(-1)!;
+  const y = bounds.y + first.y - run.size / 2;
+  await page.mouse.move(bounds.x + first.x, y);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + last.x + (last.advance ?? 1), y, { steps: 4 });
+  await page.mouse.up();
+  await settled(page);
+  await expect(overlay.first()).toBeVisible();
+});
+
 test('d2d_echo_caps_preserve_all_input', async ({ page }) => {
   for (const contextBytes of [null, 16 * 1024 + 1]) {
     await open(page, true, contextBytes);
@@ -517,6 +572,7 @@ test('d2d_in_epoch_refusal_covers_sequence_and_accepts_later_input', async ({ pa
 });
 
 test('handoff_installs_A_then_redraws_pending_B', async ({ page }) => {
+  test.skip(process.env.DOCX_PEERLESS_HARNESS !== '1', 'Presentation checkpoints require DOCX_PEERLESS_HARNESS=1');
   await openHarness(page);
   const input = await focusHarness(page);
   const canvas = page.locator('[data-peerless-docx] [data-page-id] canvas').first();
@@ -615,18 +671,21 @@ test('handoff_installs_A_then_redraws_pending_B', async ({ page }) => {
 });
 
 test('viewing_refuses_typing_then_editing_applies', async ({ page }) => {
-  await openHarness(page);
-  const input = await focusHarness(page);
+  await open(page);
+  const input = await focusDocument(page);
   const start = await commandCount(page);
   await page.evaluate(() => { window.__docxPeerlessInput.holdAcks = true; });
-  const controls = page.getByTestId('peerless-harness-mode');
-  await controls.getByRole('button', { name: 'Viewing', exact: true }).click();
+  await setMode(page, 'Editing', 'Viewing');
   await expect.poll(async () => (await commandsSince(page, start)).some((command) =>
     command.kind === 'setReadOnly' && (command.payload as { readOnly: boolean }).readOnly
   )).toBe(true);
   await beforeinput(input, 'REFUSED');
   expect((await commandsSince(page, start)).some((command) => command.kind === 'insertText')).toBe(false);
-  await controls.getByRole('button', { name: 'Editing', exact: true }).click();
+  if (!await page.getByTestId('peerless-harness-mode').isVisible()) {
+    await page.evaluate(() => window.__docxPeerlessInput.releaseAcks());
+  }
+  await setMode(page, 'Viewing', 'Editing');
+  await expect(input).toBeEditable();
   await beforeinput(input, 'OK');
   await page.evaluate(() => window.__docxPeerlessInput.releaseAcks());
   await settled(page);
@@ -636,16 +695,12 @@ test('viewing_refuses_typing_then_editing_applies', async ({ page }) => {
   expect(accepted).toBeDefined();
   expect(await page.evaluate((seq) => window.__docxPeerlessInput.acks.flatMap((ack) => ack.outcomes)
     .find((outcome) => outcome.seq === seq)?.status, accepted!.seq)).toBe('applied');
-  expect(await harnessText(page)).toBe('OKabcd');
+  expect(await savedText(page)).toBe('OKabcd');
 });
 
 test('evicted_page_repaints_after_scroll_back', async ({ page }) => {
-  await openHarness(page, 40);
-  expect(await page.evaluate(() => typeof window.__docxPeerlessHarness!.setViewport),
-    'Preview must expose the viewport driver').toBe('function');
-  const input = await focusHarness(page);
-  expect(await page.evaluate(() => window.__docxPeerlessHarness!.capabilities.viewport),
-    'Preview must register the viewport driver').toBe(true);
+  await open(page, true, null, 40);
+  const input = await focusDocument(page);
   const first = page.locator('[data-peerless-docx] [data-page-id] canvas').first();
   const original = await first.evaluate((canvas) => {
     window.__docxEvictedCanvas = canvas as HTMLCanvasElement;
@@ -684,8 +739,8 @@ test('evicted_page_repaints_after_scroll_back', async ({ page }) => {
 });
 
 test('peerless_document_scrolls_with_wheel_and_page_down', async ({ page }) => {
-  await openHarness(page, 40);
-  const input = await focusHarness(page);
+  await open(page, true, null, 40);
+  const input = await focusDocument(page);
   const scroller = page.locator('.editor-stage .docx-editor__scroll-container');
   await expect(scroller).toHaveCount(1);
   expect(await scroller.evaluate((element) => getComputedStyle(element).overflowY)).toBe('auto');
@@ -721,9 +776,9 @@ test('peerless_document_scrolls_with_wheel_and_page_down', async ({ page }) => {
 });
 
 test('d2d_readonly_navigation_only', async ({ page }) => {
-  await openHarness(page);
-  const input = await focusHarness(page);
-  await page.getByTestId('peerless-harness-mode').getByRole('button', { name: 'Viewing', exact: true }).click();
+  await open(page);
+  const input = await focusDocument(page);
+  await setMode(page, 'Editing', 'Viewing');
   await expect.poll(() => page.evaluate(() => window.__docxPeerlessInput.acks.at(-1)?.editState?.readOnly)).toBe(true);
   await expect(input).not.toBeEditable();
   await settled(page);
@@ -738,7 +793,7 @@ test('d2d_readonly_navigation_only', async ({ page }) => {
   await settled(page);
   const commands = await commandsSince(page, start);
   expect(commands.map((command) => command.kind)).toEqual(['navigate', 'navigate']);
-  expect(await harnessText(page)).toBe('abcd');
+  expect(await savedText(page)).toBe('abcd');
 });
 
 test('d2d_peerless_mount_creates_no_main_document', async ({ page }) => {
@@ -831,7 +886,7 @@ test('package_image_pixels_survive_authoritative_edit_frame', async ({ page }) =
   zip.file('word/media/image1.png', Buffer.from(readFileSync(new URL('media/image1.png.base64', fixture), 'utf8'), 'base64'));
   zip.file('[Content_Types].xml', (await zip.file('[Content_Types].xml')!.async('string'))
     .replace('</Types>', '<Default Extension="png" ContentType="image/png"/></Types>'));
-  await openHarness(page, 1, await zip.generateAsync({ type: 'nodebuffer' }));
+  await open(page, true, null, 1, await zip.generateAsync({ type: 'nodebuffer' }));
   const coloredPixels = () => documentCanvas(page).evaluate((element) => {
     const canvas = element as HTMLCanvasElement;
     const data = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -844,10 +899,10 @@ test('package_image_pixels_survive_authoritative_edit_frame', async ({ page }) =
   });
   await expect.poll(coloredPixels).toBeGreaterThan(100);
   const before = await coloredPixels();
-  const input = await focusHarness(page);
+  const input = await focusDocument(page);
   await beforeinput(input, 'edited ');
   await settled(page);
-  expect(await harnessText(page)).toContain('edited ');
+  expect(await savedText(page)).toContain('edited ');
   await expect.poll(coloredPixels).toBeGreaterThan(before * 0.9);
   expect(await page.evaluate(() => window.__docxPeerlessInput.mainInstances)).toBe(0);
 });
@@ -859,7 +914,7 @@ test('table_tab_and_shift_tab_preserve_typing_with_acks_withheld', async ({ page
     `<w:tr>${cell('A')}${cell('B')}</w:tr></w:tbl>`;
   zip.file('word/document.xml', (await zip.file('word/document.xml')!.async('string'))
     .replace('<w:r><w:t>abcd</w:t></w:r>', '').replace('</w:p><w:sectPr>', `</w:p>${table}<w:sectPr>`));
-  await openHarness(page, 1, await zip.generateAsync({ type: 'nodebuffer' }));
+  await open(page, true, null, 1, await zip.generateAsync({ type: 'nodebuffer' }));
   const initial = applyFrameDelta(null, decodeFrameDelta(Uint8Array.from(await page.evaluate(() =>
     Array.from(new Uint8Array(window.__docxPeerlessInput.initial!.frame!.payload.frame))
   ))));
@@ -891,6 +946,6 @@ test('table_tab_and_shift_tab_preserve_typing_with_acks_withheld', async ({ page
   expect(commands.map(({ kind }) => kind)).toEqual(['insertText', 'navigateCell', 'insertText', 'navigateCell', 'insertText']);
   expectChain(commands);
   await settled(page);
-  expect(await harnessText(page)).toBe('ZXAYB');
+  expect(await savedText(page)).toBe('ZXAYB');
   expect(await page.evaluate(() => window.__docxPeerlessInput.mainInstances)).toBe(0);
 });
