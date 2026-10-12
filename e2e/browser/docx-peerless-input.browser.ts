@@ -235,6 +235,7 @@ async function focusHarness(page: Page) {
 }
 
 test('font picker prepares the selected family and retains shaped glyph widths', async ({ page }) => {
+  test.skip(process.env.DOCX_PEERLESS_HARNESS !== '1', 'Font command probes require DOCX_PEERLESS_HARNESS=1');
   const zip = await JSZip.loadAsync(await documentBytes());
   const xml = await zip.file('word/document.xml')!.async('string');
   zip.file('word/document.xml', xml.replace('<w:r>', '<w:r><w:rPr><w:rFonts w:ascii="Liberation Sans" w:hAnsi="Liberation Sans"/></w:rPr>'));
