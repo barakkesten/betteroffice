@@ -31,11 +31,20 @@ const providerReplicas: unknown[] = [];
 let presentationProps: PptxAsyncEditorProps;
 const presentationOptions: PptxAsyncEditorProps['collaboration'][] = [];
 let savePresentation = async () => Uint8Array.of(3);
+let deferPresentationReady = false;
+let readyPresentation: (() => void) | undefined;
 mock.module("@betteroffice/pptx-react", () => ({
   PptxEditor: (props: PptxAsyncEditorProps) => {
     presentationProps = props;
     presentationOptions.push(props.collaboration);
-    useEffect(() => props.onReady?.({ saveAsync: () => savePresentation(), focus() {} } as PptxAsyncEditorApi), [props.onReady]);
+    useEffect(() => {
+      let dispose: void | (() => void);
+      readyPresentation = () => {
+        dispose = props.onReady?.({ saveAsync: () => savePresentation(), focus() {} } as PptxAsyncEditorApi);
+      };
+      if (!deferPresentationReady) readyPresentation();
+      return () => { dispose?.(); };
+    }, [props.onReady]);
     useEffect(() => {
       props.collaboration?.onReplica?.(presentationReplica);
       return () => props.collaboration?.onReplica?.(null);
@@ -77,7 +86,11 @@ for (const [specifier, exports] of Object.entries({
 const { act, cleanup, fireEvent, render } = await import("@testing-library/react");
 const { default: Editor } = await import("./Editor");
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  deferPresentationReady = false;
+  readyPresentation = undefined;
+});
 afterAll(async () => {
   if (ownsDom) await GlobalRegistrator.unregister();
 });
@@ -203,6 +216,22 @@ test("presentation serialization uses the async default and preserves save failu
   await expect(api.serialize()).rejects.toThrow("Worker stopped");
   savePresentation = async () => Uint8Array.of(4);
   expect(await api.serialize()).toEqual(Uint8Array.of(4));
+  expect(saved).toEqual([]);
+});
+
+test("presentation serialization waits for the editor API before saving", async () => {
+  deferPresentationReady = true;
+  savePresentation = mock(async () => Uint8Array.of(5));
+  const { api, saved } = await mount("pptx");
+  const result = api.serialize().catch((cause: Error) => cause);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(savePresentation).not.toHaveBeenCalled();
+  await act(async () => { readyPresentation!(); });
+  expect(await result).toEqual(Uint8Array.of(5));
+  expect(savePresentation).toHaveBeenCalledTimes(1);
   expect(saved).toEqual([]);
 });
 
