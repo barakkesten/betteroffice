@@ -7,11 +7,13 @@ export function prepareCommandOperation(handle: PresentationHandle, mutation: Pr
   if (!mutation || !Array.isArray(mutation.args) || mutation.args.length > 4) return null;
   const { method, args } = mutation;
   const snapshot = handle.snapshot();
-  const text = (value: unknown, limit = 1e6): value is string => typeof value === 'string' && value.length <= limit;
+  const text = (value: unknown, limit = 1e6): value is string => typeof value === 'string' && value.length <= limit &&
+    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800-\udfff\ufffe\uffff]/u.test(value);
   const position = (value: unknown): value is { xEmu: number; yEmu: number } => Boolean(value && typeof value === 'object' &&
     ['xEmu', 'yEmu'].every((key) => Number.isSafeInteger((value as Record<string, unknown>)[key])));
   const commentDraft = (value: unknown) => Boolean(value && typeof value === 'object' &&
     text((value as Record<string, unknown>).author, 1024) && text((value as Record<string, unknown>).text) &&
+    (value as { text: string }).text.length > 0 &&
     text((value as Record<string, unknown>).created, 128) && Number.isFinite(Date.parse((value as { created: string }).created)) &&
     ((value as { initials?: string }).initials === undefined || text((value as { initials: string }).initials, 128)));
   if (method === 'setCommentFlavor') return ['legacy', 'modern'].includes(args[0]) && !snapshot.comments?.length ? () => handle.setCommentFlavor(args[0]) : null;

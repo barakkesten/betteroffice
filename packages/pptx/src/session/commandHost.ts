@@ -1269,7 +1269,7 @@ export function registerPresentationCommandHandlers(
           fonts: input.fonts?.map((face) => ({ ...face, bytes: new Uint8Array(face.bytes) })),
           fallbackFonts: input.fallbackFonts?.map((face) => ({ ...face, bytes: new Uint8Array(face.bytes) })),
           initialUpdate: input.initialUpdate });
-        if (input.collaboration) offUpdates = handle.onUpdate((update, origin) => {
+        offUpdates = handle.onUpdate((update, origin) => {
           pendingUpdates.push({ bytes: update.slice().buffer, origin });
         });
         const openedMetadata = refreshMetadata();
@@ -1292,9 +1292,10 @@ export function registerPresentationCommandHandlers(
         cacheStories(content);
         for (const slide of openedMetadata.slides) revisions.set(slide.id, 0);
         const result = ack();
+        const recoveryUpdate = handle.encodeStateAsUpdate().slice().buffer;
         return transferable({ ...result.value, shared: projection.ack(result.value),
           slides: openedMetadata.slides, size: openedMetadata.size,
-          activeSlideId, frame: result.value.frame ?? null }, result.transfer);
+          activeSlideId, frame: result.value.frame ?? null, recoveryUpdate }, [...result.transfer, recoveryUpdate]);
       } catch (error) {
         dispose();
         throw error;
@@ -1466,9 +1467,9 @@ export function registerPresentationCommandHandlers(
     checkpointCommandEditor(_, request) {
       fence(request);
       const bytes = presentation().save().slice().buffer;
-      const updates = pendingUpdates.splice(0);
-    return transferable({ ...identity!, epoch: documentEpoch, throughSeq, version,
-      ...(updates.length ? { updates } : {}), bytes }, [bytes]);
+      const recoveryUpdate = presentation().encodeStateAsUpdate().slice().buffer;
+      return transferable({ ...identity!, epoch: documentEpoch, throughSeq, version,
+        bytes, recoveryUpdate }, [bytes, recoveryUpdate]);
     },
     prepareCommandPicture(_, request, bytes) {
       fence(request);

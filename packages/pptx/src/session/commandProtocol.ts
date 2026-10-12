@@ -243,6 +243,7 @@ export interface PresentationCommandOpenOptions
 }
 
 export interface PresentationCommandOpenResult extends PresentationCommandAck {
+  recoveryUpdate?: ArrayBuffer;
   slides: PresentationSlideSummary[];
   size: { width: number; height: number };
   activeSlideId: string | null;
@@ -273,6 +274,7 @@ export interface PresentationCommandSaveResult extends PresentationCommandIdenti
   throughSeq: number;
   version: string;
   bytes: ArrayBuffer;
+  recoveryUpdate?: ArrayBuffer;
 }
 
 export interface PresentationCommandReadResult extends PresentationCommandAck {
