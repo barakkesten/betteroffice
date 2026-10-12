@@ -89,7 +89,7 @@ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPrese
   return { previewFit, current };
 }
 
-function Overlays({ run, commands, preview, onError }: { run: PeerlessPresentation; commands: PptxCommandStore; preview: PeerlessShapePreviewStore; onError(error: Error): void }) {
+function Overlays({ run, commands, inputRef, preview, onError }: { run: PeerlessPresentation; commands: PptxCommandStore; inputRef: RefObject<HTMLTextAreaElement | null>; preview: PeerlessShapePreviewStore; onError(error: Error): void }) {
   const snapshot = useSyncExternalStore(run.subscribeVisual, run.getVisualSnapshot, run.getVisualSnapshot);
   if (!snapshot?.view.confirmed) return null;
   const { view, fit } = snapshot;
@@ -104,7 +104,7 @@ function Overlays({ run, commands, preview, onError }: { run: PeerlessPresentati
     </div>
     {view.selection?.kind === 'object' && <PeerlessShapeOverlay selection={view.selection} preview={preview}
       scale={fit.scale} readOnly={view.editState.readOnly} />}
-    <PeerlessTextInput store={run.store} commands={commands} visual={run.visual} viewport={{ left: 0, top: 0, scale: fit.scale }}
+    <PeerlessTextInput inputRef={inputRef} store={run.store} commands={commands} visual={run.visual} viewport={{ left: 0, top: 0, scale: fit.scale }}
       onShortcut={(shortcut) => {
         if (shortcut === 'copy' || shortcut === 'cut') void peerlessClipboard(run, shortcut === 'cut').catch((error: unknown) => { if (!run.failure) onError(error instanceof Error ? error : new Error(String(error))); });
         if (shortcut === 'save' || shortcut === 'undo' || shortcut === 'redo') void commands.execute(shortcut, null);
@@ -137,8 +137,9 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
   const callbacks = useRef(props);
   callbacks.current = props;
   const api = useRef<PptxAsyncEditorApi | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const focus = useCallback(() => {
-    stage.current?.querySelector('textarea')?.focus();
+    inputRef.current?.focus();
   }, []);
   const navigate = useCallback(() => { stage.current?.focus(); }, []);
   const selection = usePeerlessTextSelection(presentation?.store ?? null, { canvas, presentation, focus });
@@ -264,7 +265,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
           width: insertion.preview.width * insertionScale, height: insertion.preview.height * insertionScale, border: '1px dashed #2563eb' }} />}
         {plugins.managed && <PluginOverlays host={plugins.host} activations={plugins.activations} layerRef={plugins.layerRef} />}
         {presentation && !failure && props.collaboration?.presence && <PeerlessPresence run={presentation} presence={props.collaboration.presence} />}
-        {presentation && !review.diff && <Overlays run={presentation} commands={commands} preview={shapes.preview} onError={(error) => callbacks.current.onError?.(error)} />}
+        {presentation && !review.diff && <Overlays run={presentation} commands={commands} inputRef={inputRef} preview={shapes.preview} onError={(error) => callbacks.current.onError?.(error)} />}
         {presentation && <PeerlessReview run={presentation} state={review} proposals={proposals} commands={commands}
           onError={(error) => callbacks.current.onError?.(error)} exit={() => { setReview({ ...review, presenting: false }); focus(); }} />}
       </div>
