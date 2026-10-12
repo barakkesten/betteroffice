@@ -22,11 +22,12 @@ test('notes drafts queue behind typing in input order', async () => {
       fireEvent.change(notes, { target: { value: 'A' } });
       fireEvent.change(notes, { target: { value: 'AB' } });
     });
+    act(() => { type(value.view.getByLabelText('Slide text'), 'NEXT'); });
   } finally { replyControl.release(); }
   await act(async () => { await value.api.flushPendingInput(); });
   await waitFor(() => expect((value.view.getByTestId('pptx-notes-textarea') as HTMLTextAreaElement).value).toBe('AB'));
   expect((await (await value.api.handleAsync()).snapshot()).slides[0]!.notes).toBe('AB');
-  expect((await story(value.api)).text).toBe(`Typed${target.text}`);
+  expect((await story(value.api)).text).toBe(`TypedNEXT${target.text}`);
   expect(error).not.toHaveBeenCalled();
 });
 
@@ -51,6 +52,27 @@ for (const method of ['setSlideNotes', 'addComment'] as const) {
     expect(error).not.toHaveBeenCalled();
   });
 }
+
+test('typing survives an unacknowledged refused comment', async () => {
+  const value = await open();
+  const target = await story(value.api);
+  await act(async () => { await value.api.selectText({ slide: 1, shapeId: target.shapeId, storyId: target.storyId, start: 0, end: 0 }); });
+  const access = await value.api.handleAsync();
+  replyControl.hold();
+  const refused = access.addComment(target.slideId, { author: 'Writer', text: 'Comment', created: 'invalid' })
+    .catch((error: unknown) => error);
+  try {
+    await waitFor(() => expect(replyControl.count()).toBe(1));
+    act(() => { type(value.view.getByLabelText('Slide text'), 'NEXT'); });
+  } finally { replyControl.release(); }
+  await act(async () => {
+    expect(await refused).toMatchObject({ code: 'invalid-arguments' });
+    await value.api.flushPendingInput();
+  });
+  expect((await story(value.api)).text).toBe(`NEXT${target.text}`);
+  expect(await access.comments()).toEqual([]);
+  expect(value.api.failure).toBeUndefined();
+});
 
 test('invalid comments return a typed payload refusal and preserve editing', async () => {
   const value = await open();

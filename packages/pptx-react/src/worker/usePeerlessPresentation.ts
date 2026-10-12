@@ -102,7 +102,8 @@ export function usePeerlessPresentation(
     let changeSeq: number | undefined;
     let changeEvent: PresentationCommandAck['change'];
     let checkpointTimer: ReturnType<typeof setTimeout> | undefined;
-    let checkpoint = { bytes: props.file instanceof Uint8Array ? props.file.slice() : new Uint8Array(props.file).slice(), throughSeq: 0, version: '' };
+    const recoveryBase = props.file instanceof Uint8Array ? props.file.slice() : new Uint8Array(props.file).slice();
+    let checkpoint = { bytes: recoveryBase, throughSeq: 0, version: '' };
     let checkpointUpdate: Uint8Array | undefined;
     let journal: { throughSeq: number; version: string; updates: Uint8Array[] }[] = [];
     let firstPainted = false;
@@ -492,7 +493,7 @@ export function usePeerlessPresentation(
             if (!currentFile()) throw new PptxWorkerEditorDisposedError();
             if (!journal.length) return { ...checkpoint, bytes: checkpoint.bytes.slice(), recovery: true };
             if (!checkpointUpdate) throw new Error('Recovery baseline is unavailable');
-            const recovering = peerlessSessionOpener.open(checkpoint.bytes, { fonts, initialUpdate: checkpointUpdate });
+            const recovering = peerlessSessionOpener.open(recoveryBase, { fonts, initialUpdate: checkpointUpdate });
             try {
               const replay = await recovering.ready;
               for (const entry of journal) for (const update of entry.updates) {

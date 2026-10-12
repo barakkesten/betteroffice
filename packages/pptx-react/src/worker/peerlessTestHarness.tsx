@@ -28,6 +28,7 @@ let holding = false;
 let unknownNext = false;
 let held: unknown[] = [];
 let releaseReplies = () => {};
+let crashWorker = () => {};
 let suspensions = 0;
 const suspended = new Promise<void>(() => {});
 
@@ -122,6 +123,7 @@ beforeEach(() => {
       terminate() { pair.client.close(); }
     };
     const deliver = (message: unknown) => endpoint.dispatchEvent(new MessageEvent('message', { data: message }));
+    crashWorker = () => { endpoint.dispatchEvent(Object.assign(new Event('error'), { message: 'Worker stopped' })); };
     releaseReplies = () => { holding = false; for (const message of held.splice(0)) (message as () => void)(); };
     const off = pair.client.listen((message) => {
       const reply = message as { kind: string; id: number };
@@ -206,4 +208,4 @@ export function type(input: HTMLElement, text: string): void {
 
 export const replyControl = { hold() { holding = true; }, count() { return held.length; }, release() { releaseReplies(); } };
 
-export const faultControl = { unknown() { unknownNext = true; } };
+export const faultControl = { unknown() { unknownNext = true; }, crash() { crashWorker(); } };
