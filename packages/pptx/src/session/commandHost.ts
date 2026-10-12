@@ -477,7 +477,7 @@ export function registerPresentationCommandHandlers(
     const slide = objectSelection ? opened.snapshot().slides.find((slide) => slide.id === objectSelection!.slideId) : null;
     const shape = slide && findTopLevelShape(slide, objectSelection!.shapeId);
     const color = (value: string | null | undefined) => value && /^[#]?[0-9a-f]{6}$/i.test(value) ? `#${value.replace(/^#/, '')}` : null;
-    lastEditState = { readOnly, notes: activeSlideId ? { slideId: activeSlideId, text: notes.get(activeSlideId) ?? '' } : null,
+    lastEditState = { readOnly, proposals: opened.listProposals(), notes: activeSlideId ? { slideId: activeSlideId, text: notes.get(activeSlideId) ?? '' } : null,
       object: shape && slide ? { formattable: shape.kind === 'shape', geometry: shape.geometry ?? null,
         fill: shape.fill?.type === 'none' ? null : color(shape.resolvedFillColor), stroke: color(shape.resolvedOutlineColor),
         strokeWidth: shape.resolvedOutlineColor ? (shape.outline?.width ?? 12700) / 12700 : null,
@@ -1456,6 +1456,10 @@ export function registerPresentationCommandHandlers(
         case 'exportMarkdown': return opened.exportMarkdown(args[0] as Parameters<PresentationHandle['exportMarkdown']>[0]);
         case 'searchText': return opened.searchText(args[0] as string, args[1] as Parameters<PresentationHandle['searchText']>[1]);
         case 'listProposals': return opened.listProposals();
+        case 'previewProposal': return opened.previewProposal(args[0] as string);
+        case 'layoutSlide': return opened.layoutSlide(args[0] as number);
+        case 'layoutProposalSlide': return opened.layoutProposalSlide(args[0] as string, args[1] as number);
+        case 'layoutProposalDiffSlide': return opened.layoutProposalDiffSlide(args[0] as string, args[1] as number);
         default: throw new TypeError('Unsupported access method');
       }
     },

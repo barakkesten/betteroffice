@@ -14,6 +14,8 @@ import { PeerlessSlideStrip } from './PeerlessSlideStrip';
 import { PeerlessNotes } from './PeerlessNotes';
 import { PeerlessRecovery } from './PeerlessRecovery';
 import { peerlessClipboard } from './peerlessClipboard';
+import { PeerlessReview, type PeerlessReviewState } from './PeerlessReview';
+import { peerlessExportPng } from './peerlessFrameSource';
 import { PeerlessPresence } from './PeerlessPresence';
 import { peerlessObjectCommand } from './peerlessObjectCommands';
 import { createPeerlessReplica } from './peerlessCollaboration';
@@ -134,6 +136,17 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
   const navigate = useCallback(() => { stage.current?.focus(); }, []);
   const selection = usePeerlessTextSelection(presentation?.store ?? null, { canvas, presentation, focus });
   const insertion = usePeerlessInsertion(presentation, canvas, focus);
+  const [review, setReview] = useState<PeerlessReviewState>({ open: false, selectedId: null, diff: false, presenting: false });
+  const subscribeReview = useCallback((listener: () => void) => presentation?.store.subscribeEditState(listener) ?? (() => {}), [presentation]);
+  const reviewSnapshot = useCallback(() => presentation?.store.getSnapshot().editState ?? null, [presentation]);
+  const proposals = useSyncExternalStore(subscribeReview, reviewSnapshot, reviewSnapshot)?.proposals ?? [];
+  const exportPng = useCallback(async () => {
+    if (!presentation) return;
+    const blob = await peerlessExportPng(presentation);
+    presentation.require();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a'); link.href = url; link.download = 'slide.png'; link.click(); URL.revokeObjectURL(url);
+  }, [presentation]);
   const picker = useRef<HTMLInputElement>(null);
   const pictureOrigin = useRef<PeerlessInsertionOrigin | null>(null);
   const openPicture = useCallback(() => {
@@ -164,7 +177,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
     }
   }, [presentation]);
   const commands = usePeerlessCommandBinding(presentation, { tool: insertion.tool, setTool: insertion.setTool,
-    openPicture, save, focus, i18n: props.i18n, zoom, setZoom });
+    openPicture, save, focus, i18n: props.i18n, zoom, setZoom, review, proposals, setReview, exportPng });
   useEffect(() => {
     api.current = null;
     if (!presentation?.current || !canvas.current) return;
@@ -206,7 +219,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
         aria-readonly={Boolean(props.readOnly || failure)} style={styles.stage}
         onKeyDownCapture={(event) => { if (event.key === 'Escape') insertion.cancel(); shapes.onKeyDown(event); }}
         onKeyDown={(event) => {
-          if (!presentation?.current) return;
+          if (!presentation?.current || review.diff) return;
           const selected = presentation.store.getSnapshot().selection;
           if ((event.key === 'Delete' || event.key === 'Backspace') && selected?.kind === 'object') {
             event.preventDefault();
@@ -216,9 +229,9 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
           peerlessHistoryKey(event, presentation.store);
           if (!event.defaultPrevented) navigatePeerlessSlide(event, presentation);
         }}
-        onPointerDown={(event) => { if (!insertion.onPointerDown(event) && !shapes.onPointerDown(event)) selection.onPointerDown(event); }}
-        onPointerMove={(event) => { if (!insertion.onPointerMove(event) && !shapes.onPointerMove(event)) selection.onPointerMove(event); }}
-        onPointerUp={(event) => { if (!insertion.onPointerUp(event) && !shapes.onPointerUp(event)) selection.onPointerUp(event); }}
+        onPointerDown={(event) => { if (!review.diff && !insertion.onPointerDown(event) && !shapes.onPointerDown(event)) selection.onPointerDown(event); }}
+        onPointerMove={(event) => { if (!review.diff && !insertion.onPointerMove(event) && !shapes.onPointerMove(event)) selection.onPointerMove(event); }}
+        onPointerUp={(event) => { if (!review.diff && !insertion.onPointerUp(event) && !shapes.onPointerUp(event)) selection.onPointerUp(event); }}
         onPointerCancel={(event) => { insertion.onPointerCancel(event); if (!shapes.onPointerCancel(event)) selection.onPointerCancel(event); }}
         onLostPointerCapture={(event) => { insertion.onPointerCancel(event); if (!shapes.onLostPointerCapture(event)) selection.onLostPointerCapture(event); }}>
         <canvas ref={canvas} style={styles.canvas} data-testid="pptx-slide-canvas" />
@@ -226,7 +239,9 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
           left: insertion.preview.x * insertionScale, top: insertion.preview.y * insertionScale,
           width: insertion.preview.width * insertionScale, height: insertion.preview.height * insertionScale, border: '1px dashed #2563eb' }} />}
         {presentation && !failure && props.collaboration?.presence && <PeerlessPresence run={presentation} presence={props.collaboration.presence} />}
-        {presentation && <Overlays run={presentation} commands={commands} preview={shapes.preview} onError={(error) => callbacks.current.onError?.(error)} />}
+        {presentation && !review.diff && <Overlays run={presentation} commands={commands} preview={shapes.preview} onError={(error) => callbacks.current.onError?.(error)} />}
+        {presentation && <PeerlessReview run={presentation} state={review} proposals={proposals} commands={commands}
+          onError={(error) => callbacks.current.onError?.(error)} exit={() => { setReview({ ...review, presenting: false }); focus(); }} />}
       </div>
     </div>
     {presentation && <PeerlessNotes run={presentation} onError={(error) => callbacks.current.onError?.(error)} />}

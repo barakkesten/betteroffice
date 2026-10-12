@@ -7,15 +7,15 @@ import type {
 } from './methods';
 
 export type PresentationCommandAccessMethods = Pick<PresentationHandle,
-  'snapshot' | 'story' | 'findText' | 'validateEdits' | 'exportStructured' | 'exportMarkdown' | 'searchText' | 'listProposals' | 'comments' | 'encodeStateVector' | 'encodeStateAsUpdate'>;
+  'snapshot' | 'story' | 'findText' | 'validateEdits' | 'exportStructured' | 'exportMarkdown' | 'searchText' | 'listProposals' | 'comments' | 'previewProposal' | 'layoutProposalSlide' | 'layoutProposalDiffSlide' | 'layoutSlide' | 'encodeStateVector' | 'encodeStateAsUpdate'>;
 export type PresentationCommandAccessMethod = keyof PresentationCommandAccessMethods;
 export type PresentationCommandAccessResult = ReturnType<PresentationCommandAccessMethods[PresentationCommandAccessMethod]>;
 
 export type PresentationCommandMutationMethods = Pick<PresentationHandle,
   'setShapeFill' | 'setShapeStroke' | 'setShapeAdjust' | 'removeShape' | 'bringShapeToFront' |
-  'sendShapeToBack' | 'bringShapeForward' | 'sendShapeBackward' | 'insertSlide' | 'deleteSlide' | 'moveSlide' | 'setSlideNotes' | 'addComment' | 'replyToComment' | 'setCommentStatus' | 'setCommentPosition' | 'removeComment' | 'setCommentFlavor'>;
+  'sendShapeToBack' | 'bringShapeForward' | 'sendShapeBackward' | 'insertSlide' | 'deleteSlide' | 'moveSlide' | 'setSlideNotes' | 'addComment' | 'replyToComment' | 'setCommentStatus' | 'setCommentPosition' | 'removeComment' | 'setCommentFlavor' | 'propose' | 'acceptProposal' | 'rejectProposal'>;
 export const PRESENTATION_COMMAND_MUTATIONS = ['setShapeFill', 'setShapeStroke', 'setShapeAdjust', 'removeShape',
-  'bringShapeToFront', 'sendShapeToBack', 'bringShapeForward', 'sendShapeBackward', 'insertSlide', 'deleteSlide', 'moveSlide', 'setSlideNotes', 'addComment', 'replyToComment', 'setCommentStatus', 'setCommentPosition', 'removeComment', 'setCommentFlavor'] as const satisfies readonly (keyof PresentationCommandMutationMethods)[];
+  'bringShapeToFront', 'sendShapeToBack', 'bringShapeForward', 'sendShapeBackward', 'insertSlide', 'deleteSlide', 'moveSlide', 'setSlideNotes', 'addComment', 'replyToComment', 'setCommentStatus', 'setCommentPosition', 'removeComment', 'setCommentFlavor', 'propose', 'acceptProposal', 'rejectProposal'] as const satisfies readonly (keyof PresentationCommandMutationMethods)[];
 
 export type PresentationCommandMutation = { [K in keyof PresentationCommandMutationMethods]: {
   method: K; args: Parameters<PresentationCommandMutationMethods[K]>;
@@ -197,6 +197,7 @@ export interface PresentationCommandToolbarContext {
 export interface PresentationCommandEditState {
   readOnly: boolean;
   notes?: { slideId: string; text: string } | null;
+  proposals?: import('../proposals').Proposal[];
   object?: { formattable: boolean; geometry: string | null; fill: string | null; stroke: string | null;
     strokeWidth: number | null; adjustments: Record<string, number>; order: { index: number; count: number } | null } | null;
   canUndo: boolean;

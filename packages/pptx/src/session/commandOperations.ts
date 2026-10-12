@@ -1,3 +1,4 @@
+import type { PptxEditStep } from '../edits';
 import type { PresentationHandle } from '../wasm/loader';
 import type { PresentationCommandMutation } from './commandProtocol';
 import { findTopLevelShape } from './commandShapes';
@@ -23,6 +24,41 @@ export function prepareCommandOperation(handle: PresentationHandle, mutation: Pr
       case 'setCommentPosition': return !comment.parentId && position(args[1]) ? () => handle.setCommentPosition(comment.id, args[1]) : null;
       case 'removeComment': return () => handle.removeComment(comment.id);
     }
+  }
+  if (method === 'propose') {
+    const [agent, note, edits] = args;
+    if (typeof agent !== 'string' || !agent || agent.length > 1024 || note !== null && typeof note !== 'string' ||
+      !Array.isArray(edits) || !edits.length || edits.length > 256 || JSON.stringify(edits).length > 1e6) return null;
+    const content = handle.readContent();
+    if (!content.ok) return null;
+    const steps: PptxEditStep[] = [];
+    for (const edit of edits) {
+      if (!edit || typeof edit !== 'object') return null;
+      if ('storyId' in edit) {
+        const story = content.stories.find((story) => story.storyId === edit.storyId);
+        if (!story) return null;
+        const target = { kind: 'range' as const, slideId: story.slideId, shapeId: story.shapeId, storyId: story.storyId, start: edit.start, end: edit.end };
+        if (edit.type === 'replaceText') steps.push({ op: 'replaceText', target, text: edit.text });
+        else if (edit.type === 'formatText') steps.push({ op: 'formatText', target, patch: edit.patch });
+        else if (edit.type === 'setParagraphAlignment') steps.push({ op: 'setParagraphAlignment', target, alignment: edit.alignment as 'l' | 'ctr' | 'r' | 'just' | null });
+        else return null;
+      } else {
+        const { type, ...fields } = edit;
+        const { slideId, ...rest } = fields;
+        const shapeId = 'shapeId' in rest ? rest.shapeId : undefined;
+        if ('shapeId' in rest) delete (rest as { shapeId?: string }).shapeId;
+        steps.push({ op: type, target: shapeId === undefined ? { slideId } : { slideId, shapeId }, ...rest } as PptxEditStep);
+      }
+    }
+    if (!handle.validateEdits({ expectVersion: handle.version(), steps }).ok) return null;
+    return () => handle.propose(agent, note, edits);
+  }
+  if (method === 'acceptProposal' || method === 'rejectProposal') {
+    const proposal = handle.listProposals().find((proposal) => proposal.id === args[0]);
+    if (!proposal) return null;
+    if (method === 'rejectProposal') return () => handle.rejectProposal(proposal.id);
+    if (args[1]?.force !== undefined && typeof args[1].force !== 'boolean' || proposal.staleTargets.length && !args[1]?.force) return null;
+    return () => handle.acceptProposal(proposal.id, args[1]);
   }
   if (method === 'insertSlide') {
     const [index, layout] = args;
