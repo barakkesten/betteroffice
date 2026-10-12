@@ -13,10 +13,10 @@ import { useTranslation } from '../i18n';
 import { PeerlessSlideStrip } from './PeerlessSlideStrip';
 import { PeerlessNotes } from './PeerlessNotes';
 import { PeerlessRecovery } from './PeerlessRecovery';
+import { peerlessClipboard } from './peerlessClipboard';
 import { PeerlessPresence } from './PeerlessPresence';
 import { peerlessObjectCommand } from './peerlessObjectCommands';
 import { createPeerlessReplica } from './peerlessCollaboration';
-import { peerlessClipboard } from './peerlessClipboard';
 import { navigatePeerlessSlide } from './peerlessNavigation';
 import { peerlessHistoryKey } from './peerlessHistory';
 import { PeerlessCaret } from './PeerlessCaret';
@@ -32,7 +32,7 @@ import { usePeerlessShapeGestures, type PeerlessShapePreviewStore } from './useP
 
 function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPresentation | null,
   chrome: PeerlessPresentation | null,
-  toolbar: unknown, showToolbar: boolean | undefined) {
+  toolbar: unknown, showToolbar: boolean | undefined, zoom: number | 'fit') {
   const owner = useRef(run);
   owner.current = run;
   const generation = useRef(0);
@@ -46,7 +46,7 @@ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPrese
     if (!slide) return;
     width ??= element.clientWidth;
     height ??= element.clientHeight;
-    const scale = fitSlideScale(width, height, slide);
+    const scale = zoom === 'fit' ? fitSlideScale(width, height, slide) : zoom;
     const dpr = element.ownerDocument.defaultView?.devicePixelRatio ?? 1;
     const previous = measured.current;
     if (previous?.run === current && previous.width === width && previous.height === height &&
@@ -55,7 +55,7 @@ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPrese
     measured.current = { run: current, token, width, height };
     current.fit(token);
     setFit(token);
-  }, [stage]);
+  }, [stage, zoom]);
   useLayoutEffect(() => {
     const element = stage.current;
     if (!element) return;
@@ -81,14 +81,13 @@ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPrese
   return { previewFit, current };
 }
 
-function Overlays({ run, commands, preview, onError }: { run: PeerlessPresentation; commands: PptxCommandStore;
-  preview: PeerlessShapePreviewStore; onError?(error: Error): void }) {
+function Overlays({ run, commands, preview, onError }: { run: PeerlessPresentation; commands: PptxCommandStore; preview: PeerlessShapePreviewStore; onError(error: Error): void }) {
   const snapshot = useSyncExternalStore(run.subscribeVisual, run.getVisualSnapshot, run.getVisualSnapshot);
   if (!snapshot?.view.confirmed) return null;
   const { view, fit } = snapshot;
   const confirmed = view.confirmed!;
   return <div style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none',
-    touchAction: 'none',
+    touchAction: 'none', overflow: 'hidden',
     width: confirmed.displayList.width * fit.scale, height: confirmed.displayList.height * fit.scale }}>
     <div style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none',
       width: confirmed.displayList.width, height: confirmed.displayList.height,
@@ -99,9 +98,8 @@ function Overlays({ run, commands, preview, onError }: { run: PeerlessPresentati
       scale={fit.scale} readOnly={view.editState.readOnly} />}
     <PeerlessTextInput store={run.store} commands={commands} visual={run.visual} viewport={{ left: 0, top: 0, scale: fit.scale }}
       onShortcut={(shortcut) => {
+        if (shortcut === 'copy' || shortcut === 'cut') void peerlessClipboard(run, shortcut === 'cut').catch((error: unknown) => { if (!run.failure) onError(error instanceof Error ? error : new Error(String(error))); });
         if (shortcut === 'save' || shortcut === 'undo' || shortcut === 'redo') void commands.execute(shortcut, null);
-        if (shortcut === 'copy' || shortcut === 'cut') void peerlessClipboard(run, shortcut === 'cut')
-          .catch((error: unknown) => onError?.(error instanceof Error ? error : new Error(String(error))));
       }} />
   </div>;
 }
@@ -124,8 +122,9 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
     ctx?.clearRect(0, 0, surface.width, surface.height);
   }, [empty]);
   const { toolbar, showToolbar } = props;
+  const [zoom, setZoom] = useState<number | 'fit'>('fit');
   const toolbarVisible = showToolbar !== false && toolbar !== null && (toolbar !== undefined || !props.readOnly);
-  const { previewFit, current } = useStageFit(stage, pending ?? presentation, chrome, toolbar, toolbarVisible);
+  const { previewFit, current } = useStageFit(stage, pending ?? presentation, chrome, toolbar, toolbarVisible, zoom);
   const callbacks = useRef(props);
   callbacks.current = props;
   const api = useRef<PptxAsyncEditorApi | null>(null);
@@ -165,7 +164,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
     }
   }, [presentation]);
   const commands = usePeerlessCommandBinding(presentation, { tool: insertion.tool, setTool: insertion.setTool,
-    openPicture, save, focus, i18n: props.i18n });
+    openPicture, save, focus, i18n: props.i18n, zoom, setZoom });
   useEffect(() => {
     api.current = null;
     if (!presentation?.current || !canvas.current) return;
@@ -227,7 +226,7 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorProps) {
           left: insertion.preview.x * insertionScale, top: insertion.preview.y * insertionScale,
           width: insertion.preview.width * insertionScale, height: insertion.preview.height * insertionScale, border: '1px dashed #2563eb' }} />}
         {presentation && !failure && props.collaboration?.presence && <PeerlessPresence run={presentation} presence={props.collaboration.presence} />}
-        {presentation && <Overlays run={presentation} commands={commands} preview={shapes.preview} onError={props.onError} />}
+        {presentation && <Overlays run={presentation} commands={commands} preview={shapes.preview} onError={(error) => callbacks.current.onError?.(error)} />}
       </div>
     </div>
     {presentation && <PeerlessNotes run={presentation} onError={(error) => callbacks.current.onError?.(error)} />}

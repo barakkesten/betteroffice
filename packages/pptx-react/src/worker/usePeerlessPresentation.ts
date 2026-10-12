@@ -411,7 +411,7 @@ export function usePeerlessPresentation(
               if (admission === 'local-write' && (mode.current || !modeReady() || getSnapshot().editState.readOnly)) {
                 throw new Error('The editor is read-only');
               }
-              if (admission !== 'mode' && !selectionEnabled() && !['undo', 'redo', 'applyEdits', 'registerFont', 'invoke'].includes(intent.kind)) {
+              if (admission !== 'mode' && !selectionEnabled() && !['undo', 'redo', 'applyEdits', 'registerFont', 'invoke', 'setChangeObserver'].includes(intent.kind)) {
                 throw new Error('Slide input is unavailable');
               }
               return dispatch(intent);

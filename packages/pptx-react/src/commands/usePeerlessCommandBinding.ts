@@ -16,7 +16,7 @@ import type { PptxCommandArgs, PptxCommandFailureCode, PptxCommandId, PptxComman
 interface Origin extends PptxCommandOrigin { run: PeerlessPresentation; slideId: string | null; target: string | null; id: PptxCommandId }
 
 const supported = new Set<PptxCommandId>(['bold', 'italic', 'underline', 'fontFamily', 'fontSize', 'fontSizeStep',
-  'textColor', 'alignment', 'tool', 'insertImage', 'save', 'undo', 'redo', 'shapeFill', 'shapeStrokeColor', 'shapeStrokeWidth', 'shapeAdjustment', 'zOrder', 'insertSlide']);
+  'textColor', 'alignment', 'tool', 'insertImage', 'save', 'undo', 'redo', 'shapeFill', 'shapeStrokeColor', 'shapeStrokeWidth', 'shapeAdjustment', 'zOrder', 'insertSlide', 'zoom']);
 
 function target(run: PeerlessPresentation): string | null {
   const selected = run.store.getSnapshot().selection;
@@ -36,9 +36,9 @@ function receipt(ack: PresentationCommandAck | null, env: PptxCommandEnvironment
 }
 
 export function usePeerlessCommandBinding(run: PeerlessPresentation | null, {
-  tool, setTool, openPicture, save, focus, i18n,
+  tool, setTool, openPicture, save, focus, i18n, zoom, setZoom,
 }: { tool: PptxEditorTool; setTool(tool: PptxEditorTool): void; openPicture(): void; save(): Promise<void>;
-  focus(): void; i18n?: Translations }) {
+  focus(): void; i18n?: Translations; zoom: number | 'fit'; setZoom(value: number | 'fit'): void }) {
   const { t } = useTranslation();
   const controller = useMemo(() => createPptxCommandController(), [run]);
   const binding = useMemo(() => {
@@ -59,7 +59,7 @@ export function usePeerlessCommandBinding(run: PeerlessPresentation | null, {
           view?.pending.some((record) => record.intent.kind === 'undo' || record.intent.kind === 'redo'))),
         canUndo: view?.editState.canUndo ?? false, canRedo: view?.editState.canRedo ?? false,
         slide: slide ? { id: slide.id, layoutPartPath: slide.layoutPartPath } : null, layouts: [...new Set(run?.client.state.slides.flatMap((slide) => slide.layoutPartPath ? [slide.layoutPartPath] : []))].map((layoutPartPath, index) => ({ value: layoutPartPath, label: t('toolbar.layoutOption', { number: index + 1 }), args: { layoutPartPath } })),
-        text, shape: view?.editState.object ?? null, tool, zoom: 'fit',
+        text, shape: view?.editState.object ?? null, tool, zoom,
         fontFamilies: DEFAULT_FONT_FAMILIES, fontSizes: DEFAULT_FONT_SIZES, proposals: null,
         hostDisabled: (id) => !supported.has(id), translate: t };
     };
@@ -86,6 +86,7 @@ export function usePeerlessCommandBinding(run: PeerlessPresentation | null, {
         const text = (action: Parameters<typeof formatPeerlessText>[1]) => formatPeerlessText(run.store, action);
         let operation: Promise<PresentationCommandAck | null> | null = null;
         switch (id) {
+          case 'zoom': setZoom((args as PptxCommandArgs['zoom']).scale); focus(); return { ok: true, status: 'executed' };
           case 'insertSlide': operation = peerlessInsertSlide(run, (args as PptxCommandArgs['insertSlide']).layoutPartPath); break;
           case 'shapeFill': operation = peerlessObjectCommand(run, { kind: 'fill', color: (args as PptxCommandArgs['shapeFill']).color }); break;
           case 'shapeStrokeColor': operation = peerlessObjectCommand(run, { kind: 'strokeColor', color: (args as PptxCommandArgs['shapeStrokeColor']).color }); break;
@@ -113,7 +114,7 @@ export function usePeerlessCommandBinding(run: PeerlessPresentation | null, {
       chrome: () => ({ i18n }), focusEditor: focus,
     };
     return value;
-  }, [run, tool, setTool, openPicture, save, focus, i18n, t]);
+  }, [run, tool, setTool, openPicture, save, focus, i18n, zoom, setZoom, t]);
   useLayoutEffect(() => {
     controller.attach(binding);
     return () => controller.detach(binding);
