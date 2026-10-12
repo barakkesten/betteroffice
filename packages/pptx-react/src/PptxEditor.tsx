@@ -47,6 +47,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -836,7 +837,8 @@ export function PptxEditorContent({
     save: () => Promise<PptxWorkerEditorRecovery>; name: string;
   } | null>(null);
   const [collaborationReplica, setCollaborationReplica] =
-    useState<CollaborationReplica | null>(null);
+    useState<PresentationHandle | null>(null);
+  const publishedReplicaRef = useRef<{ handle: PresentationHandle } | null>(null);
   const [remotePeers, setRemotePeers] = useState<readonly PptxPresencePeer[]>([]);
   const [presenting, setPresenting] = useState(false);
   const [proposals, setProposals, proposalsRef] = useSyncedState<Proposal[]>([]);
@@ -1383,7 +1385,7 @@ export function PptxEditorContent({
         });
         worker.dispose();
       }
-      else handle?.dispose();
+      else if (publishedReplicaRef.current?.handle !== handle) handle?.dispose();
       if (workerRef.current === worker) workerRef.current = null;
       if (handleRef.current === handle) handleRef.current = null;
       imageCacheRef.current.clear();
@@ -1415,10 +1417,18 @@ export function PptxEditorContent({
     thumbnailStore,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!collaborationOnReplica || !collaborationReplica) return;
+    const publication = { handle: collaborationReplica };
+    publishedReplicaRef.current = publication;
     collaborationOnReplica(collaborationReplica);
-    return () => collaborationOnReplica(null);
+    return () => {
+      collaborationOnReplica(null);
+      queueMicrotask(() => {
+        if (handleRef.current !== collaborationReplica) collaborationReplica.dispose();
+        if (publishedReplicaRef.current === publication) publishedReplicaRef.current = null;
+      });
+    };
   }, [collaborationOnReplica, collaborationReplica]);
 
   // hover goes untracked under a non-select tool, so drop it rather than let a
