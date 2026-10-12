@@ -54,15 +54,24 @@ export function withPackageMetadata(document: Document, metadata: ResidentPackag
 
 export function sectionProperties(document: Document, section: string): SectionProperties | null {
   if (section === 'final') return resolvedFinalSectionProperties(document.package.document) ?? {};
-  const found = document.package.document.sections?.find(entry => entry.id === section || entry.properties.sectionId === section);
+  const found = document.package.document.sections?.[sectionIndex(document, section)];
   return found?.properties ?? null;
+}
+
+function sectionIndex(document: Document, section: string): number {
+  const sections = document.package.document.sections ?? [];
+  const found = sections.findIndex(entry => entry.id === section || entry.properties.sectionId === section);
+  if (found >= 0) return found;
+  const index = /^(0|[1-9]\d*)$/.test(section) ? Number(section) : -1;
+  return index >= 0 && index < sections.length - 1 ? index : -1;
 }
 
 export function patchSection(document: Document, section: string, patch: Partial<SectionProperties>): Document | null {
   if (!sectionProperties(document, section)) return null;
   const body = document.package.document;
+  const targetIndex = sectionIndex(document, section);
   const next = section === 'final' ? updateFinalSectionProperties(body, properties => ({ ...properties, ...patch }))
-    : { ...body, sections: body.sections?.map(entry => entry.id === section || entry.properties.sectionId === section
+    : { ...body, sections: body.sections?.map((entry, index) => index === targetIndex
       ? { ...entry, properties: { ...entry.properties, ...patch } } : entry) };
   return { ...document, package: { ...document.package, document: next } };
 }

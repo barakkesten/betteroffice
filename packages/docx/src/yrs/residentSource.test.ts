@@ -140,6 +140,41 @@ test('prewarm loads the worker without creating a document session', async () =>
   }
 }, TIMEOUT);
 
+for (const section of ['first', '0']) {
+  test(`earlier section ${section} properties survive save and reopen`, async () => {
+    const parts = unzipContainer(source(1));
+    parts['word/document.xml'] = toBytes('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+      '<w:p><w:pPr><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:left="1440" w:right="1440"/></w:sectPr></w:pPr><w:r><w:t>First</w:t></w:r></w:p>' +
+      '<w:p><w:r><w:t>Second</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>');
+    const document = await parsed(new Uint8Array(rezipPartsToArrayBuffer(new Map(Object.entries(parts)))));
+    if (section === 'first') document.package.document.sections![0]!.id = section;
+    const worker = startWorker();
+    const client = new ResidentEngineWorkerClient(worker);
+    try {
+      await client.openSource({ document });
+      const initial = await client.commandInit(init());
+      const properties = await client.documentRead({ kind: 'properties', target: { kind: 'section', section } });
+      expect(properties.value).toMatchObject({ properties: { marginLeft: 1440, pageWidth: 12240 } });
+      const changed = await client.edit({ session: initial.session, incarnation: initial.incarnation, seq: 1,
+        basis: { epoch: initial.epoch, version: initial.version }, kind: 'setSectionProperties',
+        payload: { section, patch: { marginLeft: 2880, pageWidth: 10000 }, expectVersion: properties.version } });
+      expect(changed.outcomes[0]?.status).toBe('applied');
+      expect((await client.documentRead({ kind: 'properties', target: { kind: 'section', section } })).value)
+        .toMatchObject({ properties: { marginLeft: 2880, pageWidth: 10000 } });
+      const reopened = await parsed(new Uint8Array((await client.save({ comments: [] })).bytes));
+      expect(reopened.package.document.sections![0]!.properties).toMatchObject({ marginLeft: 2880, pageWidth: 10000 });
+      expect(reopened.package.document.finalSectionProperties).toMatchObject({ marginLeft: 1440, pageWidth: 12240 });
+      expect((await client.edit({ session: initial.session, incarnation: initial.incarnation, seq: 2,
+        basis: { epoch: initial.epoch, version: 1 }, kind: 'undo', payload: {} })).outcomes[0]?.status).toBe('applied');
+      expect((await client.documentRead({ kind: 'properties', target: { kind: 'section', section } })).value)
+        .toMatchObject({ properties: { marginLeft: 1440, pageWidth: 12240 } });
+      expect(worker.sessions[0]!.paragraphs('body')[0]!.properties.sectPr).toMatchObject({ marginLeft: 1440, pageWidth: 12240 });
+      const undone = await parsed(new Uint8Array((await client.save({ comments: [] })).bytes));
+      expect(undone.package.document.sections![0]!.properties).toMatchObject({ marginLeft: 1440, pageWidth: 12240 });
+    } finally { client.destroy(); }
+  }, TIMEOUT);
+}
+
 test('source opening adopts a warmed client and retains its worker and memory subscription', async () => {
   const worker = startWorker();
   const warmed = new DefaultWorkerClient(worker);

@@ -447,6 +447,14 @@ export async function createResidentEngineSession(
       const margins = JSON.parse(session.section_margins_json()) as Record<string, DocxSectionMargins>;
       const sections = sectionProperties().sections;
       let changed = false;
+      for (const [index, section] of sections.slice(0, -1).entries()) {
+        const desired = document.package.document.sections?.[index]?.properties;
+        if (desired && JSON.stringify(section.properties) !== JSON.stringify(desired)) {
+          const at = { paraId: section.section, offset: 0 };
+          resident.setParagraphAttrs({ story: 'body', start: at, end: at }, { other: { sectPr: desired } });
+          changed = true;
+        }
+      }
       for (const [section, current] of Object.entries(margins)) {
         const index = sections.findIndex(entry => entry.section === section);
         const desired = section === 'final' ? resolvedFinalSectionProperties(document.package.document)
@@ -590,8 +598,9 @@ export async function createResidentEngineSession(
     saveDocument: async (host, comments, record) => {
       if (!parsedFacade || !partBase) throw new Error('The resident worker holds no parsed document');
       const { saveEditorDocument, mergeDocxHostMetadata } = await import('./editorSave');
-      const { yrsToDocument } = await import('./yrsToDocument');
+      const { noteYrsStoriesDirty, yrsToDocument } = await import('./yrsToDocument');
       const pending = projectionStories.capture();
+      noteYrsStoriesDirty(parsedFacade, pending.stories);
       const document = yrsToDocument(parsedFacade, mergeDocxHostMetadata(record.base ?? partBase, host ?? partDocument()));
       const saved = await saveEditorDocument(parsedFacade, document, comments, record);
       document.originalBuffer = saved;
