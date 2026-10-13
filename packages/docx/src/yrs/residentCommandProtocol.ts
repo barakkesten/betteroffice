@@ -1,6 +1,7 @@
 import type { DocxEditRequest, DocxEditResult, DocxTextRange } from './edits';
 import type { DisplayListRect } from '../layout/render/displayListQueries';
 import type { ResidentFontEnvironment, ResidentFontEnvironmentSnapshot } from './residentFontEnvironment';
+import type { DocxReservationsPayload, DocxResolvedReservations } from './reservations';
 import type {
   ApplyContext,
   ApplyResult,
@@ -203,7 +204,12 @@ export interface DocxCommandStagedPresentation {
 
 export interface DocxCommandPayloads {
   applyEdits: { request: DocxEditRequest; suggesting?: YrsAuthor };
-  setRenderEnvironment: { themeColors: Record<string, string>; showHiddenText: boolean };
+  setRenderEnvironment: {
+    themeColors: Record<string, string>;
+    showHiddenText: boolean;
+    /** Applied only while the command version is still `reservations.version`. */
+    reservations?: DocxReservationsPayload;
+  };
   setFontEnvironment: ResidentFontEnvironment;
   setContentControlValue: { handle: string; value: YrsContentControlValue; expectVersion: string };
   addRepeatingItem: { handle: string; expectVersion: string };
@@ -325,7 +331,12 @@ export interface ResidentCommandHooks {
 export interface ResidentCommandHooksEnvironment {
   supportsFontEnvironment?: boolean;
   readSelectionLayout(): DocxCommandSelectionLayout;
-  setRenderEnvironment?(environment: DocxCommandPayloads['setRenderEnvironment']): void;
+  /** Omits `reservations` to keep the current ones. */
+  setRenderEnvironment?(environment: {
+    themeColors: Record<string, string>;
+    showHiddenText: boolean;
+    reservations?: DocxResolvedReservations;
+  }): void;
 }
 
 export type ResidentCommandHooksFactory = (

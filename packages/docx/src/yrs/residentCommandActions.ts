@@ -11,6 +11,7 @@ import { validControlValue, resolveControlHandle } from './residentControls';
 import { propertyCommand, validPropertyCommand, propertyCommandTarget, applyPropertyCommand } from './residentPropertyCommands';
 import { validSectionMargins, nativeTabStops } from './residentSections';
 import { validFontEnvironment } from './residentFontEnvironment';
+import { resolveReservations, validReservationsPayload } from './reservations';
 import type {
   DocxCommandApplyContext,
   DocxCommandApplyResult,
@@ -135,7 +136,8 @@ function validCommandIntent(command: DocxCommandEnvelope, error: { reason: strin
     extendSelection: ['page', 'x', 'y', 'layoutRevision', 'frameEpoch', 'clickCount', 'modifiers', 'story', 'cellId'],
     deleteBackward: ['count'], deleteForward: ['count'], paragraphBreak: [], toggleMark: ['mark'],
     formatRange: ['delta'], clearFormatting: [], setParagraphAttrs: ['attrs'],
-    applyParagraphStyle: ['styleId'], setReadOnly: ['readOnly'], setRenderEnvironment: ['themeColors', 'showHiddenText'],
+    applyParagraphStyle: ['styleId'], setReadOnly: ['readOnly'],
+    setRenderEnvironment: ['themeColors', 'showHiddenText', 'reservations'],
   } satisfies Record<DocxCommandKind, string[]>;
   const keys = Object.hasOwn(allowed, command.kind) ? allowed[command.kind] : undefined;
   const semanticSelection = ['navigate', 'selectPoint', 'extendSelection', 'undo', 'redo', 'replaceMatches', 'applyEdits', 'setRenderEnvironment', 'setFontEnvironment'].includes(command.kind);
@@ -209,7 +211,8 @@ function validCommandIntent(command: DocxCommandEnvelope, error: { reason: strin
       break;
     case 'setRenderEnvironment':
       if (!object(payload.themeColors) || !Object.values(payload.themeColors).every(value =>
-        typeof value === 'string' && /^[0-9a-f]{6}$/i.test(value)) || !boolean(payload.showHiddenText)) return refuse('invalid-payload');
+        typeof value === 'string' && /^[0-9a-f]{6}$/i.test(value)) || !boolean(payload.showHiddenText) ||
+        (payload.reservations !== undefined && !validReservationsPayload(payload.reservations))) return refuse('invalid-payload');
       break;
   }
   return true;
@@ -411,7 +414,7 @@ export function applyDocxCommand(
   engine: ResidentDocxCommandEngine,
   state: ResidentDocxCommandState,
   prepared: PreparedDocxCommand,
-  _context: DocxCommandApplyContext,
+  context: DocxCommandApplyContext,
   environment?: ResidentCommandHooksEnvironment
 ): DocxCommandApplyResult {
   const { command, range, selection } = prepared;
@@ -422,7 +425,10 @@ export function applyDocxCommand(
     return { status, selection: corrected?.ok ? corrected.selection : null, editState: projectDocxEditState(engine, state, corrected, toolbar) };
   };
   if (command.kind === 'setRenderEnvironment') {
-    environment!.setRenderEnvironment!(command.payload);
+    const { reservations, ...rest } = command.payload;
+    environment!.setRenderEnvironment!(reservations?.version === String(context.currentVersion)
+      ? { ...rest, reservations: resolveReservations(engine.geometryReader, reservations, engine.proposalEngine.version()) }
+      : rest);
     return result('noop');
   }
   if (command.kind === 'applyEdits') {
