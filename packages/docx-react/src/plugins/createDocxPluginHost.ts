@@ -29,6 +29,7 @@ import {
   type DocxPluginEditorAccess,
 } from './createPluginClients';
 import { definitionProblem, pluginDefinition } from './defineDocxPlugin';
+import { scopePluginGeometry } from './geometry';
 import { observeProposals, proposalSnapshot, type DocxProposalSnapshot } from './proposalPreview';
 import type {
   DocxPlugin,
@@ -137,6 +138,7 @@ function sameLayout(a: DocxPluginLayout | null, b: DocxPluginLayout | null): boo
       a.id === b.id &&
       a.version === b.version &&
       a.previewVersion === b.previewVersion &&
+      a.reservationsVersion === b.reservationsVersion &&
       a.zoom === b.zoom)
   );
 }
@@ -221,7 +223,9 @@ export function createDocxPluginHost(access: DocxPluginHostAccess): DocxPluginHo
       commands: clients.commands,
       edits: clients.edits,
       geometry:
-        geometry && sameLayout(invocation.snapshot.layout, geometry.layout) ? geometry : null,
+        geometry && sameLayout(invocation.snapshot.layout, geometry.layout)
+          ? scopePluginGeometry(geometry, pluginId)
+          : null,
       navigation: clients.navigation,
       setState: (next, atVersion) => invocation.setState(next, atVersion),
       onCleanup: (cleanup) => invocation.onCleanup(cleanup),

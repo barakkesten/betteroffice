@@ -21,6 +21,7 @@ import { createResidentCommandConnection, discardCommandPresentation } from '@be
 import type { DocxEditorProps, DocxEditorRef } from '../../DocxEditor';
 import { createPeerlessShellController } from './shellController';
 import { createDocxPluginHost } from '../../../plugins/createDocxPluginHost';
+import { usePluginReservations } from '../../../plugins/reservations';
 import { DocxCommandProvider } from '../../../commands/DocxCommandProvider';
 import { DocxEditorShell } from '../DocxEditorShell';
 import { DocxEditorToolbar } from '../DocxEditorToolbar';
@@ -175,6 +176,9 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
     },
   }));
   const activations = useSyncExternalStore(pluginHost.subscribe, pluginHost.activations, pluginHost.activations);
+  const reservations = usePluginReservations(pluginHost, activations);
+  const reservationsRef = useRef({ payload: reservations, sent: false });
+  reservationsRef.current.payload = reservations;
   useEffect(() => {
     pluginHost.setReporter(props.onPluginError);
     pluginHost.setGrants(props.pluginGrants);
@@ -396,7 +400,12 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
     if (!current) return;
     const theme = settings.current.theme ?? renderEnvironment.current.theme;
     const themeColors = Object.fromEntries(Object.entries(theme?.colorScheme ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
-    const payload = { themeColors, showHiddenText: settings.current.showHiddenText };
+    const reserved = reservationsRef.current;
+    const reservations = reserved.payload ??
+      (reserved.sent ? { version: pluginHost.version(), sets: [] } : undefined);
+    const payload = {
+      themeColors, showHiddenText: settings.current.showHiddenText, ...(reservations ? { reservations } : {}),
+    };
     const requested = JSON.stringify(payload);
     if (current.requestedRenderEnvironment === requested) return;
     const result = current.binding.commands.submit({ kind: 'setRenderEnvironment', payload }, { fence: true, onSubmitted: (ticket) => {
@@ -412,8 +421,11 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
         errorHandler.current?.(error instanceof Error ? error : new Error(String(error)));
       });
     } });
-    if (result.status !== 'ignored') current.requestedRenderEnvironment = requested;
-  }, []);
+    if (result.status !== 'ignored') {
+      current.requestedRenderEnvironment = requested;
+      reserved.sent = reserved.payload !== null;
+    }
+  }, [pluginHost]);
   const updateFontEnvironment = useCallback(() => {
     const current = active.current;
     const client = worker.current;
@@ -502,7 +514,7 @@ export const PeerlessDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(fun
     updateFontEnvironment();
   }, [updateReadOnly, updateRenderEnvironment, updateFontEnvironment, controller]);
   useLayoutEffect(updateReadOnly, [effectiveReadOnly, updateReadOnly]);
-  useLayoutEffect(updateRenderEnvironment, [props.theme, props.showHiddenText, updateRenderEnvironment]);
+  useLayoutEffect(updateRenderEnvironment, [props.theme, props.showHiddenText, reservations, updateRenderEnvironment]);
   useLayoutEffect(updateFontEnvironment, [props.fonts, measurementFontProvider, props.onFontsLoaded, updateFontEnvironment]);
   useLayoutEffect(() => () => { active.current = null; fontAbort.current?.abort(); fontJob.current = null; fontSource.current = null; }, []);
 

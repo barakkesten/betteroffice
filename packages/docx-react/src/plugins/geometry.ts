@@ -11,11 +11,17 @@ import {
   proposalSetIdentity,
   resolvedTargetGeometry,
   type AnchorGeometryTarget,
+  type DocxResolvedReservations,
   type ProposalGeometryMirror,
   type ProposalGeometryTarget,
+  type YrsLoc,
   type YrsSession,
 } from '@betteroffice/docx/yrs';
-import { sourceVersionOf } from '../components/DocxEditor/internals/layoutProvenance';
+import {
+  reservationsKeyOf,
+  reservationsVersionOfKey,
+  sourceVersionOf,
+} from '../components/DocxEditor/internals/layoutProvenance';
 import { displayWindowOf } from '../components/DocxEditor/internals/displayWindow';
 import type { PagedEditorRef } from '../components/DocxEditor/PagedEditor';
 import type { DocxPointPosition } from '../components/DocxEditor/types';
@@ -29,6 +35,7 @@ import { currentPreviewKey, proposalSnapshot, renderedPreviewKey } from './propo
 import type {
   DocxAnchorGeometryResult,
   DocxAnchorRect,
+  DocxGeometryTarget,
   DocxPluginGeometry,
   DocxPluginLayout,
   DocxPluginRect,
@@ -82,9 +89,51 @@ export function pluginLayout(
     id: layoutIdOf(queries),
     version,
     previewVersion: preview.previewVersion,
+    reservationsVersion: reservationsVersionOfKey(reservationsKeyOf(queries)),
     zoom,
     pageCount: queries.pageCount(),
   };
+}
+
+const reservationReaders = new WeakMap<
+  DocxPluginGeometry,
+  (owner: string, id: string) => DocxAnchorGeometryResult
+>();
+const scopedGeometries = new WeakMap<DocxPluginGeometry, Map<string, DocxPluginGeometry>>();
+
+/** `geometry` as plugin `pluginId` reads it: its `reservation` targets name its own reservations. */
+export function scopePluginGeometry(
+  geometry: DocxPluginGeometry,
+  pluginId: string
+): DocxPluginGeometry {
+  let byPlugin = scopedGeometries.get(geometry);
+  if (!byPlugin) {
+    byPlugin = new Map();
+    scopedGeometries.set(geometry, byPlugin);
+  }
+  let scoped = byPlugin.get(pluginId);
+  if (!scoped) {
+    scoped = {
+      get layout() {
+        return geometry.layout;
+      },
+      get dom() {
+        return geometry.dom;
+      },
+      toOverlayRect: (rect) => geometry.toOverlayRect(rect),
+      getPositionAtPoint: (clientX, clientY) => geometry.getPositionAtPoint(clientX, clientY),
+      readPositionAtPoint: (clientX, clientY) => geometry.readPositionAtPoint(clientX, clientY),
+      getAnchorGeometry: (target: DocxGeometryTarget) => {
+        if (target.kind !== 'reservation') return geometry.getAnchorGeometry(target);
+        const read = reservationReaders.get(geometry);
+        return read
+          ? read(pluginId, target.id)
+          : anchorFailure('unsupported', 'This layout reports no reservations');
+      },
+    };
+    byPlugin.set(pluginId, scoped);
+  }
+  return scoped;
 }
 
 /**
@@ -124,6 +173,8 @@ export interface AnchorGeometryAccess {
   editor: Pick<PagedEditorRef, 'yrsLocToDisplayPosition' | 'hasPendingInput'>;
   /** Whether the pages show this layout's pixels. */
   presented: boolean;
+  /** The reservations last resolved for layout and their key; '' keys none. */
+  reservations?(): { key: string; resolved: DocxResolvedReservations | null };
 }
 
 interface Interval {
@@ -371,7 +422,159 @@ export function createPluginGeometry(
       height: 0,
     });
   };
-  return {
+  /** Places `target`, or the raw ranges a caller resolved itself. */
+  const anchorGeometry = (
+    target: AnchorGeometryTarget | null,
+    raw?: { ok: true; ranges: RawAnchorRange[]; paragraph: YrsLoc }
+  ): DocxAnchorGeometryResult => {
+    if (!shown()) return unavailable();
+    const live = access();
+    if (!live || !live.presented || live.editor.hasPendingInput()) return unavailable();
+    const { session, editor } = live;
+    if (session.version() !== layout.version) {
+      return anchorFailure('stale-version', 'The document changed after that version');
+    }
+    const snapshot = proposalSnapshot(session);
+    if (
+      (snapshot?.previewVersion ?? 0) !== layout.previewVersion ||
+      currentPreviewKey(session) !== renderedPreviewKey(queries)
+    )
+      return unavailable();
+    const mirror = live.proposalGeometry;
+    if (
+      mirror &&
+      (mirror.version !== layout.version ||
+        mirror.previewVersion !== layout.previewVersion ||
+        !snapshot ||
+        mirror.proposals !== proposalSetIdentity(snapshot))
+    )
+      return unavailable();
+    if (mirror && !target) return unavailable();
+    const mirrored = !mirror || !target
+      ? null
+      : target.kind === 'proposal'
+        ? Object.hasOwn(mirror.targets, target.id)
+          ? mirror.targets[target.id]
+          : anchorFailure('unknown-proposal', 'The proposal is not registered in this document')
+        : live.anchorTarget?.(target);
+    if (mirror && !mirrored) return unavailable();
+    if (mirrored && !mirrored.ok) return mirrored;
+    const resolved = raw ?? (mirror || !target ? null : resolveAnchorTarget(session, target, layout.version));
+    if (resolved && !resolved.ok) return resolved;
+    const root = resolved ? anchorDisplayRoot(resolved.paragraph.story) : 'body';
+    if (root === null) return anchorFailure('unsupported', 'The target has no display position');
+    const repeated =
+      resolved && root !== 'body'
+        ? resolvedTargetGeometry(session, layout.version, () =>
+            hiddenRanges(session, layout.version)
+          )(resolved)
+        : mirrored;
+    if (repeated && !repeated.ok) return repeated;
+    if (repeated?.root) {
+      const { root: story, rIds, ranges, hidden = [], paragraph } = repeated;
+      const routed = rIds ?? headerFooterDisplayRIds(session, story.slice('hf:'.length));
+      return placeRepeated(routed, [...ranges], hidden, paragraph);
+    }
+    const window = displayWindowOf(queries)?.read();
+    const display = (range: RawAnchorRange): Interval | null => {
+      const from = editor.yrsLocToDisplayPosition(range.start);
+      const to = editor.yrsLocToDisplayPosition(range.end);
+      return from === null || to === null ? null : { from, to };
+    };
+    const ranges: Interval[] = mirrored?.ok ? [...mirrored.ranges] : [];
+    for (const range of resolved?.ok ? resolved.ranges : []) {
+      const mapped = display(range);
+      if (!mapped) return anchorFailure('unsupported', 'The target has no display position');
+      ranges.push(mapped);
+    }
+    ranges.sort((a, b) => a.from - b.from || a.to - b.to);
+    if (
+      window &&
+      queries.displayList?.pages.slice(window[0], window[1]).some(
+        ({ unbuilt, positionSpan }) =>
+          unbuilt &&
+          positionSpan &&
+          ranges.some(({ from, to }) => from <= positionSpan[1] && to >= positionSpan[0])
+      )
+    )
+      return unavailable();
+    const hidden =
+      (mirror && (!hasEditorWorkerProposalRounds(session) || !workerOpenReplicaReady(session))
+        ? mirror.hidden
+        : undefined) ??
+      hiddenRanges(session, layout.version)
+        .map(display)
+        .filter((range): range is Interval => range !== null);
+    const drawn: DisplayListRect[] = [];
+    let tail: Interval | null = null;
+    for (const { from, to } of unionOf(subtract(ranges, hidden))) {
+      if (from >= to) continue;
+      const visible = queries.rangeRects(from, to).filter((rect) => rect.width > 0);
+      for (const rect of visible) {
+        if (pendingPage(rect.pageIndex)) return unavailable();
+        drawn.push(rect);
+      }
+      if (visible.length > 0) tail = { from, to };
+    }
+    const last = ranges.at(-1);
+    const gap = last && widen(last, hidden);
+    const paragraph = mirrored?.ok
+      ? mirrored.paragraph
+      : resolved?.ok
+        ? editor.yrsLocToDisplayPosition(resolved.paragraph)
+        : null;
+    const end =
+      tail !== null
+        ? (endOf(tail) ?? lastInReadingOrder(drawn))
+        : ((gap && (caretAt(gap.from, true) ?? caretAt(gap.to))) ??
+          (paragraph === null ? null : caretAt(paragraph)));
+    const fallback = end || paragraph === null ? null : queries.anchorRect(paragraph);
+    if ((end && pendingPage(end.pageIndex)) || (fallback && pendingPage(fallback.pageIndex))) {
+      return unavailable();
+    }
+    return respond(drawn, end ?? (fallback && { ...fallback, width: 0 }));
+  };
+  /** This layout's box for `owner`'s reservation `id`, or a hidden range's boundary. */
+  const reservation = (owner: string, id: string): DocxAnchorGeometryResult => {
+    if (!shown()) return unavailable();
+    const live = access();
+    if (!live || !live.presented || live.editor.hasPendingInput()) return unavailable();
+    if (live.session.version() !== layout.version) {
+      return anchorFailure('stale-version', 'The document changed after that version');
+    }
+    const current = live.reservations?.();
+    if (!current || reservationsKeyOf(queries) !== current.key) return unavailable();
+    const entry = current.resolved?.[JSON.stringify([owner, id])];
+    if (!entry) return anchorFailure('missing-target', 'The reservation did not resolve');
+    if (entry.kind === 'hide') {
+      const at = (offset: number): YrsLoc => ({ story: entry.story, paraId: entry.paraId, offset });
+      const length = live.session.paragraphSpans(entry.story)
+        .find((span) => span.paraId === entry.paraId)?.length ?? entry.end;
+      return anchorGeometry(null, {
+        ok: true,
+        ranges: [{ start: at(entry.start), end: at(Math.min(entry.end, length)) }],
+        paragraph: at(0),
+      });
+    }
+    const pages = queries.displayList?.pages ?? [];
+    let pending = false;
+    for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+      const page = pages[pageIndex]!;
+      if (page.unbuilt) {
+        pending = true;
+        continue;
+      }
+      const found = page.reservations?.find((box) => box.owner === owner && box.id === id);
+      if (found) {
+        const rect = { pageIndex, x: found.x, y: found.y, width: found.width, height: found.height };
+        return pendingPage(pageIndex) ? unavailable() : respond([rect], rect);
+      }
+    }
+    return pending || !complete()
+      ? unavailable()
+      : anchorFailure('missing-target', 'No page shows the reservation');
+  };
+  const created: DocxPluginGeometry = {
     layout,
     dom,
     toOverlayRect: (rect) =>
@@ -391,112 +594,11 @@ export function createPluginGeometry(
       return shown() && position && position.version === layout.version
         ? { ...position, layoutId: layout.id } : null;
     },
-    getAnchorGeometry(target) {
-      if (!shown()) return unavailable();
-      const live = access();
-      if (!live || !live.presented || live.editor.hasPendingInput()) return unavailable();
-      const { session, editor } = live;
-      if (session.version() !== layout.version) {
-        return anchorFailure('stale-version', 'The document changed after that version');
-      }
-      const snapshot = proposalSnapshot(session);
-      if (
-        (snapshot?.previewVersion ?? 0) !== layout.previewVersion ||
-        currentPreviewKey(session) !== renderedPreviewKey(queries)
-      )
-        return unavailable();
-      const mirror = live.proposalGeometry;
-      if (
-        mirror &&
-        (mirror.version !== layout.version ||
-          mirror.previewVersion !== layout.previewVersion ||
-          !snapshot ||
-          mirror.proposals !== proposalSetIdentity(snapshot))
-      )
-        return unavailable();
-      const mirrored = !mirror
-        ? null
-        : target.kind === 'proposal'
-          ? Object.hasOwn(mirror.targets, target.id)
-            ? mirror.targets[target.id]
-            : anchorFailure('unknown-proposal', 'The proposal is not registered in this document')
-          : live.anchorTarget?.(target);
-      if (mirror && !mirrored) return unavailable();
-      if (mirrored && !mirrored.ok) return mirrored;
-      const resolved = mirror ? null : resolveAnchorTarget(session, target, layout.version);
-      if (resolved && !resolved.ok) return resolved;
-      const root = resolved ? anchorDisplayRoot(resolved.paragraph.story) : 'body';
-      if (root === null) return anchorFailure('unsupported', 'The target has no display position');
-      const repeated =
-        resolved && root !== 'body'
-          ? resolvedTargetGeometry(session, layout.version, () =>
-              hiddenRanges(session, layout.version)
-            )(resolved)
-          : mirrored;
-      if (repeated && !repeated.ok) return repeated;
-      if (repeated?.root) {
-        const { root: story, rIds, ranges, hidden = [], paragraph } = repeated;
-        const routed = rIds ?? headerFooterDisplayRIds(session, story.slice('hf:'.length));
-        return placeRepeated(routed, [...ranges], hidden, paragraph);
-      }
-      const window = displayWindowOf(queries)?.read();
-      const display = (range: RawAnchorRange): Interval | null => {
-        const from = editor.yrsLocToDisplayPosition(range.start);
-        const to = editor.yrsLocToDisplayPosition(range.end);
-        return from === null || to === null ? null : { from, to };
-      };
-      const ranges: Interval[] = mirrored?.ok ? [...mirrored.ranges] : [];
-      for (const range of resolved?.ok ? resolved.ranges : []) {
-        const mapped = display(range);
-        if (!mapped) return anchorFailure('unsupported', 'The target has no display position');
-        ranges.push(mapped);
-      }
-      ranges.sort((a, b) => a.from - b.from || a.to - b.to);
-      if (
-        window &&
-        queries.displayList?.pages.slice(window[0], window[1]).some(
-          ({ unbuilt, positionSpan }) =>
-            unbuilt &&
-            positionSpan &&
-            ranges.some(({ from, to }) => from <= positionSpan[1] && to >= positionSpan[0])
-        )
-      )
-        return unavailable();
-      const hidden =
-        (mirror && (!hasEditorWorkerProposalRounds(session) || !workerOpenReplicaReady(session))
-          ? mirror.hidden
-          : undefined) ??
-        hiddenRanges(session, layout.version)
-          .map(display)
-          .filter((range): range is Interval => range !== null);
-      const drawn: DisplayListRect[] = [];
-      let tail: Interval | null = null;
-      for (const { from, to } of unionOf(subtract(ranges, hidden))) {
-        if (from >= to) continue;
-        const visible = queries.rangeRects(from, to).filter((rect) => rect.width > 0);
-        for (const rect of visible) {
-          if (pendingPage(rect.pageIndex)) return unavailable();
-          drawn.push(rect);
-        }
-        if (visible.length > 0) tail = { from, to };
-      }
-      const last = ranges.at(-1);
-      const gap = last && widen(last, hidden);
-      const paragraph = mirrored?.ok
-        ? mirrored.paragraph
-        : resolved?.ok
-          ? editor.yrsLocToDisplayPosition(resolved.paragraph)
-          : null;
-      const end =
-        tail !== null
-          ? (endOf(tail) ?? lastInReadingOrder(drawn))
-          : ((gap && (caretAt(gap.from, true) ?? caretAt(gap.to))) ??
-            (paragraph === null ? null : caretAt(paragraph)));
-      const fallback = end || paragraph === null ? null : queries.anchorRect(paragraph);
-      if ((end && pendingPage(end.pageIndex)) || (fallback && pendingPage(fallback.pageIndex))) {
-        return unavailable();
-      }
-      return respond(drawn, end ?? (fallback && { ...fallback, width: 0 }));
-    },
+    getAnchorGeometry: (target) =>
+      target.kind === 'reservation'
+        ? anchorFailure('unsupported', 'Reservations are read through a plugin context')
+        : anchorGeometry(target),
   };
+  reservationReaders.set(created, reservation);
+  return created;
 }

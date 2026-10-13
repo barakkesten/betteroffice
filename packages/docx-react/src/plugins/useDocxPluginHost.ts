@@ -21,12 +21,21 @@ import {
 } from '@betteroffice/docx/layout/render';
 import type { RenderedDomContext } from '@betteroffice/docx/plugin-api';
 import type { ResidentDocumentReadValues } from '@betteroffice/docx/yrs/residentEngineWorkerProtocol';
-import type { ResidentEngineWorkerClient, YrsSession } from '@betteroffice/docx/yrs';
+import {
+  resolveReservations,
+  type DocxReservationsPayload,
+  type DocxResolvedReservations,
+  type ResidentEngineWorkerClient,
+  type YrsSession,
+} from '@betteroffice/docx/yrs';
 import type { DocxCommandController } from '../commands/createDocxCommandStore';
 import type { EditorMode } from '../components/DocxEditor/internals/editing-modes';
 import {
   isPresented,
+  keyResolvedReservations,
   onPresented,
+  readSessionVersion,
+  resolvedReservationsKey,
   sourceVersionOf,
   presentedWorkerVersion,
 } from '../components/DocxEditor/internals/layoutProvenance';
@@ -46,6 +55,7 @@ import {
 import { resolveParagraph } from './createPluginClients';
 import { createPluginGeometry, pluginLayout, readPluginPositionAtPoint } from './geometry';
 import { managedSidebarItems } from './PluginSidebarItems';
+import { usePluginReservations } from './reservations';
 import { currentPreviewKey } from './proposalPreview';
 import type {
   DocxEditorPluginProps,
@@ -100,6 +110,8 @@ export interface DocxPluginHostBinding {
   /** Publishes the current selection to plugins. */
   publishSelection(): void;
   publishViewerSelection(selection: ViewerSelectionChange): void;
+  /** The plugins' reservations resolved at the version they were computed at, or null. */
+  reservations: DocxResolvedReservations | null;
 }
 
 /** Whether `queries` show the editor's whole, final layout. */
@@ -237,6 +249,31 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
   }, [host]);
 
   const activations = useSyncExternalStore(host.subscribe, host.activations, () => NO_ACTIVATIONS);
+  const reservationsPayload = usePluginReservations(host, managed ? activations : NO_ACTIVATIONS);
+  const resolvedRef = useRef<{
+    payload: DocxReservationsPayload | null;
+    session: YrsSession | null;
+    resolved: DocxResolvedReservations | null;
+    serial: number;
+  }>({ payload: null, session: null, resolved: null, serial: 0 });
+  const reservations = useMemo((): DocxResolvedReservations | null => {
+    const kept = resolvedRef.current;
+    const session = options.viewerSelection ? null : options.session;
+    if (kept.payload === reservationsPayload && kept.session === session) return kept.resolved;
+    if (reservationsPayload && session && readSessionVersion(session) !== reservationsPayload.version) {
+      return kept.resolved;
+    }
+    let resolved: DocxResolvedReservations | null = null;
+    const serial = kept.serial + 1;
+    if (reservationsPayload && session) {
+      resolved = resolveReservations(session, reservationsPayload);
+      keyResolvedReservations(resolved, reservationsPayload.version, serial);
+    }
+    resolvedRef.current = { payload: reservationsPayload, session, resolved, serial };
+    return resolved;
+  }, [reservationsPayload, options.session, options.viewerSelection]);
+  const reservationsRef = useRef(reservations);
+  reservationsRef.current = reservations;
 
   const publishSelection = useCallback(() => {
     if (!latest.current.plugins?.length) return;
@@ -342,6 +379,7 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
     layout?.id !== layoutStable.current?.id ||
     layout?.version !== layoutStable.current?.version ||
     layout?.previewVersion !== layoutStable.current?.previewVersion ||
+    layout?.reservationsVersion !== layoutStable.current?.reservationsVersion ||
     layout?.zoom !== layoutStable.current?.zoom
   ) {
     layoutStable.current = layout;
@@ -386,6 +424,10 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
               session,
               editor,
               presented: isPresented(dom.context.pagesContainer, dom.queries.displayList),
+              reservations: () => ({
+                key: resolvedReservationsKey(reservationsRef.current),
+                resolved: reservationsRef.current,
+              }),
               ...(authority && proposalGeometry
                 ? { proposalGeometry, anchorTarget: authority.anchorTarget }
                 : {}),
@@ -545,6 +587,7 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
     host,
     managed,
     activations: managed ? activations : NO_ACTIVATIONS,
+    reservations,
     sidebarItems,
     renderedDomContext: dom?.context ?? null,
     heldGeometry,
