@@ -154,7 +154,12 @@ interface Segment {
 }
 
 /** `range` cut at its paragraphs; `mark` takes the last paragraph's mark too. */
-function segments(reader: AnchorReader, range: RawAnchorRange, mark: boolean): Segment[] {
+interface StoryIndex {
+  spans: ReturnType<AnchorReader['paragraphSpans']>;
+  positions: Map<string, number>;
+}
+
+function segments(indexFor: (story: string) => StoryIndex, range: RawAnchorRange, mark: boolean): Segment[] {
   const { story } = range.start;
   if (range.start.paraId === range.end.paraId) {
     return [{
@@ -164,9 +169,9 @@ function segments(reader: AnchorReader, range: RawAnchorRange, mark: boolean): S
       end: range.end.offset + (mark ? 1 : 0),
     }];
   }
-  const spans = reader.paragraphSpans(story);
-  const first = spans.findIndex((span) => span.paraId === range.start.paraId);
-  const last = spans.findIndex((span) => span.paraId === range.end.paraId);
+  const { spans, positions } = indexFor(story);
+  const first = positions.get(range.start.paraId) ?? -1;
+  const last = positions.get(range.end.paraId) ?? -1;
   if (first < 0 || last < first) return [];
   return spans.slice(first, last + 1).map((span, index, covered) => ({
     story,
@@ -185,17 +190,47 @@ export function resolveReservations(
   payload: DocxReservationsPayload,
   readerVersion: string = payload.version
 ): DocxResolvedReservations {
+  const stories = new Map<string, StoryIndex>();
+  const indexFor = (story: string): StoryIndex => {
+    let index = stories.get(story);
+    if (!index) {
+      const spans = reader.paragraphSpans(story);
+      const positions = new Map<string, number>();
+      spans.forEach((span, position) => {
+        if (!positions.has(span.paraId)) positions.set(span.paraId, position);
+      });
+      index = { spans, positions };
+      stories.set(story, index);
+    }
+    return index;
+  };
+  const storySegments = new Map<string, ReturnType<AnchorReader['storySegments']>>();
+  const cachedReader: AnchorReader = {
+    resolveParagraphAnchor: (anchor) => reader.resolveParagraphAnchor(anchor),
+    hasStory: (story) => reader.hasStory(story),
+    findText: (...args) => reader.findText(...args),
+    listRevisions: () => reader.listRevisions(),
+    paragraphSpans: (story) => indexFor(story).spans,
+    storySegments: (story) => {
+      let segments = storySegments.get(story);
+      if (!segments) {
+        segments = reader.storySegments(story);
+        storySegments.set(story, segments);
+      }
+      return segments;
+    },
+  };
   const resolved: DocxResolvedReservations = {};
   for (const { owner, items } of payload.sets) {
     for (const item of items) {
       const anchor = item.anchor.kind === 'range'
         ? { ...item.anchor, version: item.anchor.version === payload.version ? readerVersion : '' }
         : item.anchor;
-      const result = resolveAnchorTarget(reader, anchor, readerVersion);
+      const result = resolveAnchorTarget(cachedReader, anchor, readerVersion);
       if (!result.ok || !result.ranges.length) continue;
       const mark = item.anchor.kind === 'paragraph';
       const parts = (item.kind === 'inline' ? result.ranges.slice(0, 1) : result.ranges)
-        .flatMap((range) => segments(reader, range, mark));
+        .flatMap((range) => segments(indexFor, range, mark));
       const first = parts[0];
       if (!first) continue;
       const key = (index: number) => JSON.stringify(index ? [owner, item.id, index] : [owner, item.id]);
