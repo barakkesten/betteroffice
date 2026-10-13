@@ -64,10 +64,10 @@ test('reservation carried sets retain only their previous owner entries', async 
     ] });
     const carried = { version: session.version(), sets: [{ ...original.sets[0]!, version: 'older' }] };
     expect(validReservationsPayload(carried)).toBe(true);
-    expect(validReservationsPayload({ ...carried, sets: [{ ...carried.sets[0], version: '' }] })).toBe(false);
     const result = resolveReservations(session, carried, session.version(), previous);
     const retained = Object.fromEntries(Object.entries(previous).filter(([, entry]) => entry.owner === 'a'));
     expect(result).toEqual(retained);
+    expect(validReservationsPayload({ ...carried, sets: [{ ...carried.sets[0], version: '' }] })).toBe(false);
     for (const [key, entry] of Object.entries(result)) expect(entry).toBe(previous[key]);
     expect(resolveReservations(session, carried, session.version(), null)).toEqual({});
   } finally { session.destroy(); }

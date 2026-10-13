@@ -4301,7 +4301,7 @@ describe('worker proposals during sliced completion', () => {
         { owner: 'a', items: [item('a', oldVersion, 35)] },
         { owner: 'removed', items: [item('removed', oldVersion, 20)] },
       ])).toEqual(expect.arrayContaining([expect.objectContaining({ owner: 'a', width: 35 })]));
-      engine.applyRawOps('body', [{ op: 'insertText', index: 2, text: 'X' }]);
+      engine.applyRawOps('body', [{ op: 'insert', index: 2, text: 'X' }]);
       const boxes = await sync([
         { owner: 'a', version: oldVersion, items: [item('a', oldVersion, 99)] },
         { owner: 'fresh', items: [item('fresh', engine.proposalEngine.version(), 75)] },
