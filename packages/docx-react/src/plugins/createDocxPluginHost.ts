@@ -84,6 +84,8 @@ export interface DocxPluginHost {
   layoutPresented(layout: DocxPluginLayout): void;
   /** Geometry for the shown `layout` exists now; repeats its `layout-change` if none carried it. */
   geometryPresented(layout: DocxPluginLayout): void;
+  /** @internal Resolves after queued plugin notifications finish. */
+  notificationsIdle(): Promise<void>;
   activations(): readonly DocxPluginActivation[];
   subscribe(listener: () => void): () => void;
   /** The restricted command store an activation's React contributions see. */
@@ -484,6 +486,7 @@ export function createDocxPluginHost(access: DocxPluginHostAccess): DocxPluginHo
       notifyLayout(generation);
     },
 
+    notificationsIdle: () => runtime.notificationsIdle(),
     activations: () => runtime.activations(),
     subscribe: (listener) => runtime.subscribe(listener),
 

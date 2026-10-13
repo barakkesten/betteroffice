@@ -305,12 +305,25 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
   test('initialize, load, one change per batch, and cleanup on removal and readdition', async () => {
     const { plugin, log, contexts } = recorder();
     let live: CollaborationReplica | null = null;
-    const { ref, rerender } = await mount({
+    let host!: pluginHosts.DocxPluginHost;
+    const createHost = pluginHosts.createDocxPluginHost;
+    const capture = spyOn(pluginHosts, 'createDocxPluginHost').mockImplementation((access) => {
+      host = createHost(access);
+      return host;
+    });
+    let mounted!: Awaited<ReturnType<typeof mount>>;
+    try { mounted = await mount({
       plugins: [plugin],
       ...(experimentalWorkerOpen === undefined ? {
         collaboration: { onReplica: (replica: CollaborationReplica | null) => { live = replica; } },
       } : {}),
-    });
+    }); } finally { capture.mockRestore(); }
+    const { ref, rerender } = mounted;
+    const drainNotifications = async () => {
+      await ref.current!.flushPendingInput();
+      await ref.current!.readParagraphs({ view: 'accepted', paraIds: [] });
+      await host.notificationsIdle();
+    };
     await until(() => log.includes('load:loaded'));
     expect(log.slice(0, 2)).toEqual(['initialize', 'load:loaded']);
     const changeCount = () => log.filter((entry) => entry.startsWith('document-change')).length;
@@ -331,7 +344,7 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       const stale = await ref.current!.applyEdits(appendRequest(version, paragraph.paraId));
       expect(stale).toMatchObject({ ok: false, failure: { code: 'stale-version' } });
     });
-    await act(async () => {});
+    await act(drainNotifications);
     expect(log.filter((entry) => entry.startsWith('document-change'))).toHaveLength(1);
 
     const session = experimentalWorkerOpen === false
@@ -365,7 +378,7 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       });
       expect(noop).toMatchObject({ ok: true, applied: false });
     });
-    await act(async () => {});
+    await act(drainNotifications);
     expect(log.filter((entry) => entry.startsWith('document-change'))).toHaveLength(3);
     const replica = await createYrsSession({ clientId: 5151 });
     try {

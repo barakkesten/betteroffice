@@ -294,7 +294,7 @@ test('notification idle waits for running handlers and every queued event', asyn
   delivered.length = 0;
   host.modeChanged('viewing', true);
   await entering;
-  host.selectionChanged({ formatting: null, displayRange: { from: 1, to: 2 } });
+  host.selectionChanged({ formatting: null, displayRange: { story: 'body', from: 1, to: 2, layoutId: 'layout' } });
   let idle = false;
   const drained = host.notificationsIdle().then(() => { idle = true; });
   await Promise.resolve();
