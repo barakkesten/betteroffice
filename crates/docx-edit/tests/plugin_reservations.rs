@@ -79,15 +79,37 @@ fn request(engine: &EngineSession, bytes: &[u8], reservations: &Value) -> Value 
     request
 }
 
-fn laid_out(bytes: &[u8], reservations: Value) -> EngineSession {
+/// A laid-out session with the display extras a host passes.
+struct Laid {
+    engine: EngineSession,
+    extras: String,
+}
+
+impl std::ops::Deref for Laid {
+    type Target = EngineSession;
+
+    fn deref(&self) -> &EngineSession {
+        &self.engine
+    }
+}
+
+fn laid_out(bytes: &[u8], reservations: Value) -> Laid {
     let engine = EngineSession::new(7101);
     seed_from_docx(engine.doc(), bytes).unwrap();
     let request = request(&engine, bytes, &reservations);
-    engine
-        .layout_document_with_regions_retained_json(&request.to_string())
-        .unwrap();
-    engine.build_display_list_frame("{}", 0).unwrap();
-    engine
+    let output: Value = serde_json::from_str(
+        &engine
+            .layout_document_with_regions_retained_json(&request.to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    let extras = json!({
+        "headersFooters": output["headersFooters"],
+        "fontChains": request["measurement"]["fontChains"],
+    })
+    .to_string();
+    engine.build_display_list_frame(&extras, 0).unwrap();
+    Laid { engine, extras }
 }
 
 fn display(engine: &EngineSession) -> Value {
@@ -146,6 +168,11 @@ fn rect(engine: &EngineSession, from: i64, to: i64) -> Rect {
         .unwrap_or_else(|| panic!("no rect for {from}..{to}"))
 }
 
+/// The vertical middle of a text rect, which overhangs its line box by the glyph ascent.
+fn middle(rect: Rect) -> f64 {
+    rect.y + rect.height / 2.0
+}
+
 fn assert_near(actual: f64, expected: f64, what: &str) {
     assert!(
         (actual - expected).abs() < 0.5,
@@ -161,13 +188,21 @@ fn an_inline_reservation_takes_its_width_and_height_at_its_anchor() {
 
     let beta = rect(&plain, 7, 11);
     assert_near(rect(&engine, 7, 11).x, beta.x + 40.0, "text after the box");
-    assert_near(rect(&engine, 1, 6).x, rect(&plain, 1, 6).x, "text before the box");
+    assert_near(
+        rect(&engine, 1, 6).x,
+        rect(&plain, 1, 6).x,
+        "text before the box",
+    );
 
     let boxes = reserved(&engine);
     assert_eq!(boxes.len(), 1, "{boxes:?}");
     let reservation = &boxes[0];
     assert_eq!(
-        (reservation.page, reservation.owner.as_str(), reservation.id.as_str()),
+        (
+            reservation.page,
+            reservation.owner.as_str(),
+            reservation.id.as_str()
+        ),
         (0, "plugin", "10000001@6")
     );
     assert_near(reservation.rect.x, beta.x, "box x");
@@ -175,10 +210,13 @@ fn an_inline_reservation_takes_its_width_and_height_at_its_anchor() {
     assert_near(reservation.rect.height, 60.0, "box height");
     let next = rect(&engine, 19, 23);
     assert!(
-        reservation.rect.y + reservation.rect.height <= next.y + 0.5,
+        reservation.rect.y + reservation.rect.height <= middle(next),
         "{reservation:?} overlaps {next:?}"
     );
-    assert!(next.y >= rect(&plain, 19, 23).y + 40.0, "the line grows to the box");
+    assert!(
+        next.y >= rect(&plain, 19, 23).y + 40.0,
+        "the line grows to the box"
+    );
     assert!(reserved(&plain).is_empty());
 }
 
@@ -194,22 +232,36 @@ fn a_block_reservation_pushes_the_following_text_by_its_height() {
         ]),
     );
     let alpha = rect(&engine, 1, 6);
+    let pitch = rect(&plain, 8, 12).y - rect(&plain, 1, 6).y;
     assert_near(alpha.y, rect(&plain, 1, 6).y + 30.0, "before block");
     let next = rect(&engine, 8, 12);
     assert_near(next.y, rect(&plain, 8, 12).y + 130.0, "both blocks");
 
     let boxes = reserved(&engine);
     assert_eq!(boxes.len(), 2, "{boxes:?}");
-    let before = boxes.iter().find(|item| item.id == "10000001-before").unwrap();
-    let after = boxes.iter().find(|item| item.id == "10000001-after").unwrap();
+    let before = boxes
+        .iter()
+        .find(|item| item.id == "10000001-before")
+        .unwrap();
+    let after = boxes
+        .iter()
+        .find(|item| item.id == "10000001-after")
+        .unwrap();
     for (reservation, height) in [(before, 30.0), (after, 100.0)] {
         assert_near(reservation.rect.x, LEFT, "block x");
         assert_near(reservation.rect.width, COLUMN, "block width");
         assert_near(reservation.rect.height, height, "block height");
     }
-    assert!(before.rect.y + before.rect.height <= alpha.y + 0.5);
-    assert!(after.rect.y >= alpha.y + alpha.height - 0.5);
-    assert!(after.rect.y + after.rect.height <= next.y + 0.5);
+    assert_near(before.rect.y, 48.0, "before block at the top of the body");
+    assert_near(
+        after.rect.y,
+        48.0 + 30.0 + pitch,
+        "after block below its paragraph",
+    );
+    assert!(
+        after.rect.y + after.rect.height <= middle(next),
+        "{after:?} {next:?}"
+    );
 }
 
 #[test]
@@ -227,15 +279,21 @@ fn a_block_taller_than_the_page_starts_the_next_page_clipped_to_the_body() {
 #[test]
 fn an_inline_box_wider_than_the_column_takes_its_own_line_and_overflows() {
     let bytes = document(&[("10000001", "Alpha beta gamma")]);
-    let engine = laid_out(&bytes, set(vec![inline("body", "10000001", 6, 1000.0, 20.0)]));
+    let engine = laid_out(
+        &bytes,
+        set(vec![inline("body", "10000001", 6, 1000.0, 20.0)]),
+    );
     let boxes = reserved(&engine);
     assert_eq!(boxes.len(), 1, "{boxes:?}");
     let reservation = boxes[0].rect;
     assert_near(reservation.width, 1000.0, "never shrunk or split");
     let alpha = rect(&engine, 1, 6);
-    let beta = rect(&engine, 7, 11);
-    assert!(reservation.y >= alpha.y + alpha.height - 0.5, "{reservation:?} {alpha:?}");
-    assert!(beta.y >= reservation.y + reservation.height - 0.5, "{beta:?} {reservation:?}");
+    let beta = *rects(&engine, 7, 11).last().unwrap();
+    assert!(reservation.y >= middle(alpha), "{reservation:?} {alpha:?}");
+    assert!(
+        middle(beta) >= reservation.y + reservation.height,
+        "{beta:?} {reservation:?}"
+    );
 }
 
 #[test]
@@ -251,9 +309,17 @@ fn hiding_removes_a_range_and_a_whole_paragraph_from_render_only() {
         set(vec![hide("10000001", 6, 11), hide("10000002", 0, 7)]),
     );
     assert!(rects(&engine, 7, 11).is_empty());
-    assert_near(rect(&engine, 12, 17).x, rect(&plain, 7, 11).x, "gamma takes beta's place");
+    assert_near(
+        rect(&engine, 12, 17).x,
+        rect(&plain, 7, 11).x,
+        "gamma takes beta's place",
+    );
     assert!(rects(&engine, 19, 25).is_empty());
-    assert_near(rect(&engine, 27, 31).y, rect(&plain, 19, 25).y, "the paragraph is gone");
+    assert_near(
+        rect(&engine, 27, 31).y,
+        rect(&plain, 19, 25).y,
+        "the paragraph is gone",
+    );
     assert!(reserved(&engine).is_empty());
 }
 
@@ -381,7 +447,19 @@ fn a_paged_export_lays_out_without_reservations() {
     );
     assert_eq!(rect(&engine, 8, 12).page, 2);
     assert_eq!(export(&engine), expected);
-    engine.build_display_list_frame("{}", 0).unwrap();
+    let layout_version = engine
+        .export_structured_with_pages(&options)
+        .unwrap()
+        .content
+        .layout
+        .layout_version;
+    let pinned = PageExportOptions {
+        expect_layout_version: Some(layout_version.clone()),
+        ..options.clone()
+    };
+    let again = engine.export_structured_with_pages(&pinned).unwrap();
+    assert_eq!(again.content.layout.layout_version, layout_version);
+    engine.build_display_list_frame(&engine.extras, 0).unwrap();
     assert_eq!(reserved(&engine).len(), 1);
     assert_eq!(rect(&engine, 8, 12).page, 2);
 }
