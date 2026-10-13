@@ -571,19 +571,21 @@ export function createPluginGeometry(
       }, false, true);
     }
     const pages = queries.displayList?.pages ?? [];
+    const rects: DisplayListRect[] = [];
     let pending = false;
     for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
       const page = pages[pageIndex]!;
+      const found = page.reservations?.filter((box) => box.owner === owner && box.id === id) ?? [];
+      if (found.length && pendingPage(pageIndex)) return unavailable();
       if (page.unbuilt) {
         pending = true;
         continue;
       }
-      const found = page.reservations?.find((box) => box.owner === owner && box.id === id);
-      if (found) {
-        const rect = { pageIndex, x: found.x, y: found.y, width: found.width, height: found.height };
-        return pendingPage(pageIndex) ? unavailable() : respond([rect], rect);
+      for (const box of found) {
+        rects.push({ pageIndex, x: box.x, y: box.y, width: box.width, height: box.height });
       }
     }
+    if (rects.length) return respond(rects, rects[0]!);
     return pending || !complete()
       ? unavailable()
       : anchorFailure('missing-target', 'No page shows the reservation');
