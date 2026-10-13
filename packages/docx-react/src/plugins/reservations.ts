@@ -7,6 +7,8 @@ import type { DocxPluginActivation, DocxPluginHost } from './createDocxPluginHos
 import type { DocxReservationSet } from './types';
 
 interface Evaluated {
+  definition: DocxPluginActivation['plugin'];
+  generate: DocxPluginActivation['plugin']['reservations'];
   state: unknown;
   version: string;
   mode: string;
@@ -55,12 +57,16 @@ export function usePluginReservations(
       let entry = evaluated.current.get(activation.activation);
       if (
         !entry ||
+        entry.definition !== activation.plugin ||
+        entry.generate !== generate ||
         entry.state !== state ||
         entry.version !== snapshot.version ||
         entry.mode !== snapshot.mode ||
         entry.readOnly !== snapshot.readOnly
       ) {
         entry = {
+          definition: activation.plugin,
+          generate,
           state,
           version: snapshot.version,
           mode: snapshot.mode,
