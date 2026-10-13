@@ -8,6 +8,7 @@ import type { DisplayListQueries, DisplayListRect } from '@betteroffice/docx/lay
 import type { RenderedDomContext } from '@betteroffice/docx/plugin-api';
 import {
   proposalRevisionPreview,
+  type DocxResolvedReservations,
   type DocxSessionParagraphAnchor,
   type DocxTextRange,
   type YrsSession,
@@ -17,13 +18,21 @@ import {
   createRenderedDomContext,
 } from '@betteroffice/docx/plugin-api/RenderedDomContext';
 import {
+  keyResolvedReservations,
   revisionPreviewKey,
+  stampReservationsKey,
   stampRevisionPreviewKey,
   stampSourceVersion,
   UNKNOWN_REVISION_PREVIEW_KEY,
 } from '../components/DocxEditor/internals/layoutProvenance';
 import { bindDisplayWindow } from '../components/DocxEditor/internals/displayWindow';
-import { createPluginGeometry, pluginLayout, readPluginPositionAtPoint, toOverlayRect } from './geometry';
+import {
+  createPluginGeometry,
+  pluginLayout,
+  readPluginPositionAtPoint,
+  scopePluginGeometry,
+  toOverlayRect,
+} from './geometry';
 import type { PagedEditorRef } from '../components/DocxEditor/PagedEditor';
 import type { DocxPointPosition } from '../components/DocxEditor/types';
 import * as proposalPreview from './proposalPreview';
@@ -78,6 +87,70 @@ function queries(): DisplayListQueries {
   } as unknown as DisplayListQueries;
 }
 
+describe('reservation geometry', () => {
+  test('answers a plugin its own box once the painted layout holds its latest set', () => {
+    const pages = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    canvas.dataset.pageIndex = '0';
+    pages.appendChild(canvas);
+    const layer = document.createElement('div');
+    place(pages, rectAt(0, 0, 800, 1200));
+    place(canvas, rectAt(0, 0, PAGE.width, PAGE.height));
+    place(layer, rectAt(0, 0, 800, 1200));
+    const box = { owner: 'acme.a', id: 'box', x: 10, y: 20, width: 30, height: 40 };
+    const source = {
+      ...queries(),
+      displayList: { pages: [{ pageIndex: 0, ...PAGE, primitives: [], reservations: [box] }] },
+    } as unknown as DisplayListQueries;
+    stampSourceVersion(source, 'v');
+    stampReservationsKey(source, '');
+    const dom = createRenderedDomContext(pages, 1, {
+      displayListQueries: source,
+      projector: createCanvasHostProjector(pages, source, 1),
+    });
+    const resolved: DocxResolvedReservations = {
+      [JSON.stringify(['acme.a', 'box'])]: {
+        owner: 'acme.a', id: 'box', story: 'body', paraId: 'p', start: 0, end: 0,
+        kind: 'inline', width: 30, height: 40,
+      },
+    };
+    let current: { key: string; resolved: DocxResolvedReservations | null } = { key: '', resolved: null };
+    const session = { version: () => 'v' } as unknown as YrsSession;
+    const layout = pluginLayout(source, 'v', 1, { key: '', previewVersion: 0 })!;
+    expect(layout.reservationsVersion).toBeNull();
+    const geometry = createPluginGeometry(layout, dom, layer, () => true, () => null, source,
+      () => ({
+        session,
+        editor: { hasPendingInput: () => false, yrsLocToDisplayPosition: () => null },
+        presented: true,
+        reservations: () => current,
+      }),
+      () => false, undefined, () => true);
+    const mine = scopePluginGeometry(geometry, 'acme.a');
+    const target = { kind: 'reservation', id: 'box' } as const;
+    expect(scopePluginGeometry(geometry, 'acme.a')).toBe(mine);
+    expect(geometry.getAnchorGeometry(target)).toMatchObject({ ok: false, failure: { code: 'unsupported' } });
+
+    current = { key: keyResolvedReservations(resolved, 'v', 1), resolved };
+    expect(mine.getAnchorGeometry(target)).toMatchObject({
+      ok: false, failure: { code: 'layout-unavailable' },
+    });
+    stampReservationsKey(source, current.key);
+    expect(pluginLayout(source, 'v', 1, { key: '', previewVersion: 0 })!.reservationsVersion).toBe('v');
+    const result = mine.getAnchorGeometry(target);
+    if (!result.ok) throw new Error(result.failure.message);
+    expect(result).toMatchObject({ version: 'v', layoutId: layout.id });
+    expect(result.anchor).toEqual({ x: 10, y: 20, width: 30, height: 40, pageIndex: 0 });
+    expect(result.rects).toEqual([result.anchor]);
+    expect(scopePluginGeometry(geometry, 'acme.b').getAnchorGeometry(target)).toMatchObject({
+      ok: false, failure: { code: 'missing-target' },
+    });
+    expect(mine.getAnchorGeometry({ kind: 'reservation', id: 'other' })).toMatchObject({
+      ok: false, failure: { code: 'missing-target' },
+    });
+  });
+});
+
 describe('plugin overlay geometry', () => {
   test('moves a context rectangle into the layer once, at every zoom', () => {
     for (const zoom of [0.5, 1, 2]) {
@@ -108,7 +181,7 @@ describe('plugin overlay geometry', () => {
       expect(overlay.width).toBeCloseTo(RANGE.width * zoom);
       expect(overlay.height).toBeCloseTo(RANGE.height * zoom);
 
-      const layout = { id: 'layout', version: 'v', previewVersion: 0, zoom, pageCount: 1 };
+      const layout = { id: 'layout', version: 'v', previewVersion: 0, reservationsVersion: null, zoom, pageCount: 1 };
       let current = true;
       const geometry = createPluginGeometry(
         layout,
@@ -132,7 +205,7 @@ describe('plugin overlay geometry', () => {
     const custom: Omit<RenderedDomContext, 'getPositionAtPoint'> = new Proxy(dom, {
       get: (target, key) => (key === 'getPositionAtPoint' ? undefined : Reflect.get(target, key)),
     });
-    const layout = { id: 'layout', version: 'v', previewVersion: 0, zoom: 1, pageCount: 1 };
+    const layout = { id: 'layout', version: 'v', previewVersion: 0, reservationsVersion: null, zoom: 1, pageCount: 1 };
     const geometry = createPluginGeometry(
       layout,
       custom,
@@ -335,7 +408,7 @@ function semanticGeometry(zoom = 1, ancestor = 1, { stableSession = false } = {}
   let current = true;
   let available = true;
   let presented = true;
-  const layout = { id: 'layout', version: 'v1', previewVersion: 0, zoom, pageCount: 2 };
+  const layout = { id: 'layout', version: 'v1', previewVersion: 0, reservationsVersion: null, zoom, pageCount: 2 };
   const geometry = createPluginGeometry(
     layout,
     dom,
@@ -730,7 +803,7 @@ describe('semantic anchor geometry', () => {
       displayListQueries: source,
       projector: createCanvasHostProjector(pages, source, 1),
     });
-    const layout = { id: 'layout', version: 'v1', previewVersion: 0, zoom: 1.5, pageCount: 1 };
+    const layout = { id: 'layout', version: 'v1', previewVersion: 0, reservationsVersion: null, zoom: 1.5, pageCount: 1 };
     const geometry = createPluginGeometry(
       layout,
       dom,
@@ -1139,7 +1212,7 @@ for (const viewer of [false, true]) {
       displayListQueries: source,
       projector: createCanvasHostProjector(pages, source, 1),
     });
-    const layout = { id: 'layout', version: 'v', previewVersion: 0, zoom: 1, pageCount: 1 };
+    const layout = { id: 'layout', version: 'v', previewVersion: 0, reservationsVersion: null, zoom: 1, pageCount: 1 };
     const geometry = createPluginGeometry(layout, dom, document.createElement('div'), () => true,
       () => hit, source, () => null, () => false,
       (x, y) => readPluginPositionAtPoint({ current: editor }, x, y));
@@ -1157,7 +1230,7 @@ for (const change of ['id', 'version', 'zoom'] as const) {
       displayListQueries: source,
       projector: createCanvasHostProjector(pages, source, 1),
     });
-    const layout = { id: 'layout', version: 'v', previewVersion: 0, zoom: 1, pageCount: 1 };
+    const layout = { id: 'layout', version: 'v', previewVersion: 0, reservationsVersion: null, zoom: 1, pageCount: 1 };
     let current = { ...layout };
     let resolve!: (hit: DocxPointPosition | null) => void;
     const pending = new Promise<DocxPointPosition | null>((done) => { resolve = done; });

@@ -61,6 +61,7 @@ const layout = (previewVersion: number): DocxPluginLayout => ({
   id: 'layout',
   version: 'v1',
   previewVersion,
+  reservationsVersion: null,
   zoom: 1,
   pageCount: 1,
 });

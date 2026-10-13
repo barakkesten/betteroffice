@@ -8,6 +8,8 @@ import { preloadOpcWasm } from '../wasm/opc';
 import { createResidentEngineSession } from './residentEngineSession';
 import { residentWorkerFactory } from './__fixtures__/residentWorker';
 import { ResidentEngineWorkerClient } from './residentEngineWorkerClient';
+import { createYrsSession } from './index';
+import { resolveReservations, type DocxReservation } from './reservations';
 import type { DocxCommandEnvelope, ResidentCommandInitRequest } from './residentCommandProtocol';
 import type { ResidentEngineWorkerResponse } from './residentEngineWorkerProtocol';
 
@@ -193,6 +195,118 @@ test('render environment commands change hidden text and theme colors without ed
     expect(layouts).toHaveBeenCalledTimes(1);
     layouts.mockRestore();
   } finally { client.destroy(); }
+}, TIMEOUT);
+
+test('render environment reservations lay out at their command version and never reach the document', async () => {
+  const { client, engine, initial, point } = await openWorker({ bodyXml:
+    '<w:p w14:paraId="00000001"><w:r><w:t>Alpha beta</w:t></w:r></w:p>' +
+    '<w:p w14:paraId="00000002"><w:r><w:t>Gamma</w:t></w:r></w:p>',
+  });
+  try {
+    const at = (offset: number) => ({ paraId: point.paraId, offset });
+    const inline = (version: string, width: number) => ({
+      id: 'box', kind: 'inline', width, height: 30,
+      anchor: { kind: 'range', version, range: { story: 'body', start: at(6), end: at(6), view: 'accepted' } },
+    });
+    const environment = (reservations: unknown) => ({ themeColors: {}, showHiddenText: false, reservations } as never);
+    const nativeVersion = engine.proposalEngine.version();
+    const before = new Uint8Array((await client.save({ comments: [] })).bytes);
+    let frame = applyFrameDeltaOwned(null, decodeFrameDelta(initial.frame!.payload.frame));
+    const boxes = () => frame.displayList.pages.flatMap((page) => page.reservations ?? []);
+    expect(boxes()).toEqual([]);
+
+    const set = await client.edit(intent(1, 0, 'setRenderEnvironment', environment({
+      version: '0', sets: [{ owner: 'plugin', items: [inline('0', 40)] }],
+    })));
+    expect(set.outcomes[0]?.status).toBe('noop');
+    frame = applyFrameDeltaOwned(frame, decodeFrameDelta(set.frame!.payload.frame));
+    expect(boxes()).toEqual([expect.objectContaining({ owner: 'plugin', id: 'box', width: 40, height: 30 })]);
+    expect(frameText(frame)).toBe('Alpha betaGamma');
+    expect(engine.proposalEngine.version()).toBe(nativeVersion);
+    expect(new Uint8Array((await client.save({ comments: [] })).bytes)).toEqual(before);
+
+    const stale = await client.edit(intent(2, 0, 'setRenderEnvironment', environment({
+      version: '5', sets: [{ owner: 'plugin', items: [inline('5', 80)] }],
+    })));
+    expect(stale.outcomes[0]?.status).toBe('noop');
+    if (stale.frame) frame = applyFrameDeltaOwned(frame, decodeFrameDelta(stale.frame.payload.frame));
+    expect(boxes()).toEqual([expect.objectContaining({ id: 'box', width: 40 })]);
+
+    const invalid = await client.edit(intent(3, 0, 'setRenderEnvironment', environment({
+      version: '0', sets: [{ owner: 'plugin', items: [inline('0', -1)] }],
+    })));
+    expect(invalid.outcomes[0]).toMatchObject({ status: 'refused', reason: 'invalid-payload' });
+
+    await client.edit(intent(4, 0, 'setReadOnly', { readOnly: true }));
+    const readOnly = await client.edit(intent(5, 0, 'setRenderEnvironment', environment({
+      version: '0', sets: [{ owner: 'plugin', items: [{
+        id: 'gap', kind: 'block', side: 'after', height: 50,
+        anchor: { kind: 'paragraph', paragraph: {
+          kind: 'session', sessionId: engine.paragraphIdentities().sessionId, story: 'body', paraId: point.paraId,
+        } },
+      }] }],
+    })));
+    expect(readOnly.outcomes[0]?.status).toBe('noop');
+    frame = applyFrameDeltaOwned(frame, decodeFrameDelta(readOnly.frame!.payload.frame));
+    expect(boxes()).toEqual([expect.objectContaining({ id: 'gap', height: 50 })]);
+
+    const cleared = await client.edit(intent(6, 0, 'setRenderEnvironment', environment({ version: '0', sets: [] })));
+    frame = applyFrameDeltaOwned(frame, decodeFrameDelta(cleared.frame!.payload.frame));
+    expect(boxes()).toEqual([]);
+  } finally { client.destroy(); }
+}, TIMEOUT);
+
+test('the worker and a main-thread session lay out one reservation set identically', async () => {
+  const bodyXml = '<w:p w14:paraId="00000001"><w:r><w:t>Alpha beta gamma</w:t></w:r></w:p>' +
+    '<w:p w14:paraId="00000002"><w:r><w:t>Next</w:t></w:r></w:p>';
+  const { client, engine, init, initial, point } = await openWorker({ bodyXml });
+  const host = await createYrsSession({ clientId: 8302 });
+  try {
+    host.seedFromDocx(syntheticDocument(false, false, false, bodyXml));
+    const items = (sessionId: string): DocxReservation[] => {
+      const paragraph = { kind: 'session' as const, sessionId, story: 'body', paraId: point.paraId };
+      return [
+        { id: 'chip', kind: 'inline', width: 40, height: 24, anchor: { kind: 'search', paragraph, text: 'beta' } },
+        { id: 'gap', kind: 'block', side: 'after', height: 50, anchor: { kind: 'paragraph', paragraph } },
+        { id: 'cut', kind: 'hide', anchor: { kind: 'search', paragraph, text: 'gamma' } },
+      ];
+    };
+    const set = await client.edit(intent(1, 0, 'setRenderEnvironment', {
+      themeColors: {}, showHiddenText: false,
+      reservations: { version: '0', sets: [{ owner: 'plugin', items: items(engine.paragraphIdentities().sessionId) }] },
+    } as never));
+    const worker = applyFrameDeltaOwned(
+      applyFrameDeltaOwned(null, decodeFrameDelta(initial.frame!.payload.frame)),
+      decodeFrameDelta(set.frame!.payload.frame)
+    );
+
+    const font = host.registerFont(new Uint8Array(readFileSync(resolve(
+      process.cwd(), 'crates/ooxml-text/tests/fonts/LiberationSans-Regular.ttf'
+    ))));
+    const reservations = resolveReservations(host, {
+      version: host.version(),
+      sets: [{ owner: 'plugin', items: items(host.paragraphIdentities().sessionId) }],
+    });
+    const request = JSON.parse(init.layoutInput);
+    request.measurement.fontChains = { 'liberation sans|0|0': [font] };
+    request.renderEnv = { ...request.renderEnv, reservations };
+    host.layoutDocumentWithRegionsRetainedJson(JSON.stringify(request));
+    const main = applyFrameDeltaOwned(null, decodeFrameDelta(host.buildDisplayListFrame(JSON.stringify({
+      fontChains: { 'liberation sans|0|0': [font], 'calibri|0|0': [font] },
+    }), 0)));
+
+    const shape = (frame: RetainedFrame) => frame.displayList.pages.map((page) => ({
+      reservations: page.reservations,
+      text: page.primitives.flatMap((primitive) => primitive.kind === 'glyphRun' || primitive.kind === 'text'
+        ? [[primitive.text, Math.round(primitive.kind === 'text' ? primitive.x : primitive.glyphs[0]?.x ?? 0)]] : []),
+    }));
+    expect(shape(worker)[0]!.reservations?.map(({ id }) => id).sort()).toEqual(['chip', 'gap']);
+    expect(frameText(worker)).toBe('Alpha beta Next');
+    expect(shape(main)).toEqual(shape(worker));
+  } finally {
+    host.destroy();
+    client.destroy();
+  }
 }, TIMEOUT);
 
 function expectFrameRegions(frame: RetainedFrame, headerText: string, footerText: string): void {

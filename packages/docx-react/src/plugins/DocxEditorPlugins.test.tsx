@@ -1278,6 +1278,102 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
     expect(image.anchor.x).toBeCloseTo(image.rects[0]!.x + image.rects[0]!.width);
   });
 
+  test('reservations take layout space geometry reports, read-only, and never reach saved bytes', async () => {
+    let geometry: DocxPluginGeometry | null = null;
+    const buffer = await inlineImageDocument(
+      '<w:p w14:paraId="00000001"><w:r><w:t>First paragraph text</w:t></w:r></w:p>' +
+      '<w:p w14:paraId="00000002"><w:r><w:t>Second</w:t></w:r></w:p>'
+    );
+    const { ref, rerender } = await mount({}, false, buffer);
+    const { version, paragraph } = await firstParagraph(ref);
+    const identity = (await ref.current!.getParagraphIdentities()).paragraphs.find(
+      (candidate) => candidate.session?.paraId === paragraph.paraId
+    )!.session!;
+    const saved = new Uint8Array((await ref.current!.save())!);
+    let evaluations = 0;
+    const plugin = defineDocxPlugin({
+      id: 'acme.reserve',
+      createState: () => null,
+      reservations: (context) => {
+        evaluations += 1;
+        return {
+          version: context.snapshot.version,
+          items: [
+            {
+              id: 'chip', kind: 'inline', width: 40, height: 20,
+              anchor: { kind: 'search', paragraph: identity, text: 'paragraph' },
+            },
+            { id: 'gap', kind: 'block', side: 'after', height: 60, anchor: { kind: 'paragraph', paragraph: identity } },
+          ],
+        };
+      },
+      overlay: (props) => {
+        geometry = props.geometry;
+        return null;
+      },
+    });
+    const anchored = async () => {
+      await until(() => {
+        const current = geometry as DocxPluginGeometry | null;
+        return current?.layout.version === version && current.layout.reservationsVersion === version;
+      });
+      const current = geometry! as DocxPluginGeometry;
+      current.dom.pagesContainer.getBoundingClientRect = () => new DOMRect(0, 0, 800, 1200);
+      for (const canvas of current.dom.pagesContainer.querySelectorAll('canvas[data-page-index]')) {
+        canvas.getBoundingClientRect = () => new DOMRect(0, 0, 800, 1000);
+      }
+      const chip = current.getAnchorGeometry({ kind: 'reservation', id: 'chip' });
+      const gap = current.getAnchorGeometry({ kind: 'reservation', id: 'gap' });
+      if (!chip.ok || !gap.ok) throw new Error('reservation geometry failed');
+      expect(chip.rects).toEqual([chip.anchor]);
+      expect(chip.anchor.height / chip.anchor.width).toBeCloseTo(0.5);
+      expect(gap.anchor.height).toBeCloseTo(chip.anchor.height * 3);
+      expect(gap.anchor.y).toBeGreaterThan(chip.anchor.y);
+      expect(current.getAnchorGeometry({ kind: 'reservation', id: 'missing' })).toMatchObject({
+        ok: false, failure: { code: 'missing-target' },
+      });
+    };
+    rerender({ plugins: [plugin] });
+    await anchored();
+    expect(new Uint8Array((await ref.current!.save())!)).toEqual(saved);
+    const evaluated = evaluations;
+    await act(async () => ref.current!.setZoom(1.25));
+    await until(() => (geometry as DocxPluginGeometry | null)?.layout.zoom === 1.25);
+    expect(evaluations).toBe(evaluated);
+    geometry = null;
+    rerender({ plugins: [plugin], readOnly: true });
+    await anchored();
+    rerender({ plugins: [plugin] });
+    const removed = await ref.current!.applyEdits({
+      expectVersion: version,
+      steps: [{ op: 'deleteParagraphs', story: 'body', firstParaId: paragraph.paraId, lastParaId: paragraph.paraId }],
+    });
+    if (!removed.ok) throw new Error(removed.failure.message);
+    await until(() => {
+      const current = geometry as DocxPluginGeometry | null;
+      return current?.layout.version === removed.version && current.layout.reservationsVersion === removed.version;
+    });
+    expect(geometry!.getAnchorGeometry({ kind: 'reservation', id: 'chip' })).toMatchObject({
+      ok: false, failure: { code: 'missing-target' },
+    });
+  });
+
+  test('an invalid reservation set fails its plugin with invalid-payload', async () => {
+    const errors: DocxPluginError[] = [];
+    const plugin = defineDocxPlugin({
+      id: 'acme.bad-reserve',
+      createState: () => null,
+      reservations: (context) => ({
+        version: context.snapshot.version,
+        items: [{ id: 'gap', kind: 'hide', anchor: { kind: 'search', paragraph: null as never, text: '' } }],
+      }),
+    });
+    await mount({ plugins: [plugin], onPluginError: (error) => errors.push(error) });
+    await until(() => errors.length > 0);
+    expect(errors[0]).toMatchObject({ pluginId: 'acme.bad-reserve', phase: 'reservations' });
+    expect(String((errors[0]!.error as Error).message)).toBe('invalid-payload');
+  });
+
   test('an anchor stays inside its range across a line break and after an image', async () => {
     let geometry: DocxPluginGeometry | null = null;
     const plugin = defineDocxPlugin({
