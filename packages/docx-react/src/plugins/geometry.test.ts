@@ -88,6 +88,54 @@ function queries(): DisplayListQueries {
 }
 
 describe('reservation geometry', () => {
+  test('a header reservation reports every built repeated page and waits for pending matches', () => {
+    const pages = document.createElement('div');
+    const layer = document.createElement('div');
+    place(pages, rectAt(0, 0, 100, 800));
+    place(layer, rectAt(0, 0, 100, 800));
+    const box = { owner: 'test.header', id: 'running', x: 10, y: 5, width: 30, height: 12 };
+    for (let index = 0; index < 4; index += 1) {
+      const canvas = document.createElement('canvas');
+      canvas.dataset.pageIndex = String(index);
+      place(canvas, rectAt(0, index * 200, 100, 200));
+      pages.appendChild(canvas);
+    }
+    const source = {
+      ...queries(), pageCount: () => 4,
+      displayList: { pages: Array.from({ length: 4 }, (_, pageIndex) => ({
+        pageIndex, ...PAGE, primitives: [], header: { rId: 'running' },
+        reservations: [box], unbuilt: pageIndex === 1,
+      })) },
+    } as unknown as DisplayListQueries;
+    const resolved: DocxResolvedReservations = { [JSON.stringify(['test.header', 'running'])]: {
+      owner: 'test.header', id: 'running', story: 'hf:running', paraId: 'p', start: 0, end: 0,
+      kind: 'inline', width: 30, height: 12,
+    } };
+    const key = keyResolvedReservations(resolved, 'v', 1);
+    stampSourceVersion(source, 'v');
+    stampReservationsKey(source, key);
+    const dom = createRenderedDomContext(pages, 1, {
+      displayListQueries: source, projector: createCanvasHostProjector(pages, source, 1),
+    });
+    let pending = false;
+    bindDisplayWindow(source, { read: () => pending ? [0, 4] : [2, 4], subscribe: () => () => {} });
+    const layout = pluginLayout(source, 'v', 1, { key: '', previewVersion: 0 })!;
+    const geometry = scopePluginGeometry(createPluginGeometry(layout, dom, layer, () => true,
+      () => null, source, () => ({
+        session: { version: () => 'v' } as unknown as YrsSession,
+        editor: { hasPendingInput: () => false, yrsLocToDisplayPosition: () => null },
+        presented: true, reservations: () => ({ key, resolved }),
+      }), () => false, undefined, () => true), 'test.header');
+    const result = geometry.getAnchorGeometry({ kind: 'reservation', id: 'running' });
+    if (!result.ok) throw new Error(result.failure.message);
+    expect(result.rects.map((rect) => rect.pageIndex)).toEqual([0, 2, 3]);
+    expect(result.anchor).toEqual(result.rects[0]);
+    pending = true;
+    expect(geometry.getAnchorGeometry({ kind: 'reservation', id: 'running' })).toMatchObject({
+      ok: false, failure: { code: 'layout-unavailable' },
+    });
+  });
+
   test('answers a plugin its own box once the painted layout holds its latest set', () => {
     const pages = document.createElement('div');
     const canvas = document.createElement('canvas');

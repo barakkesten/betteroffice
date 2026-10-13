@@ -265,6 +265,19 @@ fn a_block_reservation_pushes_the_following_text_by_its_height() {
 }
 
 #[test]
+fn a_wide_block_reservation_is_clipped_to_its_column() {
+    let bytes = document(&[("10000001", "Alpha")]);
+    let mut wide = block("10000001", "before", 30.0);
+    wide["width"] = json!(1000.0);
+    let engine = laid_out(&bytes, set(vec![wide]));
+    let boxes = reserved(&engine);
+    assert_eq!(boxes.len(), 1);
+    assert_near(boxes[0].rect.width, COLUMN, "clipped block width");
+    assert!(boxes[0].rect.x >= LEFT);
+    assert!(boxes[0].rect.x + boxes[0].rect.width <= LEFT + COLUMN);
+}
+
+#[test]
 fn a_block_taller_than_the_page_starts_the_next_page_clipped_to_the_body() {
     let bytes = document(&[("10000001", "Alpha"), ("10000002", "Next")]);
     let engine = laid_out(&bytes, set(vec![block("10000001", "after", 5000.0)]));
