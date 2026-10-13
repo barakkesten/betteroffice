@@ -410,6 +410,37 @@ fn reservations_lay_out_in_table_cells_and_headers() {
 }
 
 #[test]
+fn wide_block_reservations_are_clipped_in_cells_and_headers() {
+    let table = r#"<w:tbl><w:tblPr><w:tblW w:w="4800" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="4800"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w="4800" w:type="dxa"/></w:tcPr><w:p w14:paraId="30000001"><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
+    let bytes = fixture::with_body(&format!("{table}{SECTION}"));
+    let mut cell = block("30000001", "before", 10.0);
+    cell["story"] = json!("body:t0:r0c0");
+    let plain = laid_out(&bytes, set(vec![cell.clone()]));
+    cell["width"] = json!(1000.0);
+    let wide = laid_out(&bytes, set(vec![cell]));
+    assert_near(
+        reserved(&wide)[0].rect.width,
+        reserved(&plain)[0].rect.width,
+        "cell content width",
+    );
+    assert!(reserved(&wide)[0].rect.width < COLUMN);
+
+    let bytes = fixture::headed_docx(&fixture::p("21000001", &fixture::r("Running")));
+    let mut running = block("21000001", "before", 10.0);
+    running["story"] = json!("hf:rIdHeader2");
+    let plain = laid_out(&bytes, set(vec![running.clone()]));
+    running["width"] = json!(1000.0);
+    let wide = laid_out(&bytes, set(vec![running]));
+    let expected = reserved(&plain);
+    let actual = reserved(&wide);
+    assert!(actual.len() > 1);
+    assert_eq!(actual.len(), expected.len());
+    for (wide, plain) in actual.iter().zip(expected.iter()) {
+        assert_near(wide.rect.width, plain.rect.width, "header band width");
+    }
+}
+
+#[test]
 fn an_inline_box_in_a_right_to_left_paragraph_sits_in_visual_order() {
     let paragraph = r#"<w:p w14:paraId="40000001"><w:pPr><w:bidi/></w:pPr><w:r><w:rPr><w:rtl/></w:rPr><w:t xml:space="preserve">שלום עולם</w:t></w:r></w:p>"#;
     let bytes = fixture::with_body(&format!("{paragraph}{SECTION}"));
@@ -478,7 +509,7 @@ fn a_paged_export_lays_out_without_reservations() {
 }
 
 #[test]
-fn a_thousand_inline_reservations_lay_out_in_linear_time() {
+fn a_thousand_inline_reservations_each_report_a_box() {
     let paragraphs: Vec<(String, String)> = (0..1000)
         .map(|index| (format!("5{index:07}"), format!("Item {index} text")))
         .collect();

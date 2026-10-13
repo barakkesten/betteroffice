@@ -1252,7 +1252,11 @@ pub fn measure_block(
             }))
         }
         LayoutBlock::Reserved(reserved) => Ok(BlockExtent::Image(ImageExtent {
-            width: reserved.width.unwrap_or(content_width),
+            width: reserved
+                .width
+                .unwrap_or(content_width)
+                .min(content_width.max(0.0))
+                .max(0.0),
             height: reserved.height,
         })),
         LayoutBlock::SectionBreak(_) => Ok(BlockExtent::SectionBreak),

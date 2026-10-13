@@ -4629,7 +4629,7 @@ fn emit_note_item(
                     &block.reservation,
                     x,
                     y + cursor,
-                    measure.width,
+                    measure.width.min(width.max(0.0)).max(0.0),
                     measure.height,
                 );
                 cursor += measure.height;
@@ -5040,7 +5040,7 @@ fn recompose_hf_region(
                     &block.reservation,
                     page.margins.left,
                     y,
-                    measure.width,
+                    measure.width.min(content_width.max(0.0)).max(0.0),
                     measure.height,
                 );
             }
@@ -10250,7 +10250,7 @@ fn emit_cell_content(
                 &block.reservation,
                 content_x,
                 content_top + block_tops[i],
-                measure.width,
+                measure.width.min(content_width.max(0.0)).max(0.0),
                 measure.height,
             );
         } else if let (BlockIn::Image(image), MeasureIn::Image(image_measure)) = (cell_block, m) {

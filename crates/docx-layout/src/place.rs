@@ -1602,7 +1602,7 @@ fn layout_reserved(block: &ReservedBlock, measure: &ImageExtent, paginator: &mut
         block_id: block.id.clone(),
         x: paginator.get_column_x(column_index),
         y: 0.0,
-        width: measure.width,
+        width: measure.width.min(paginator.column_width().max(0.0)).max(0.0),
         height,
     });
     paginator.add_fragment(fragment, height, 0.0, 0.0);
