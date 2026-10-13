@@ -43,7 +43,7 @@ export type DocxReservation =
 /** @internal Every owner's reservations, computed at `version`. */
 export interface DocxReservationsPayload {
   version: string;
-  sets: readonly { owner: string; items: readonly DocxReservation[] }[];
+  sets: readonly { owner: string; version?: string; items: readonly DocxReservation[] }[];
 }
 
 /** @internal One reservation resolved to paragraph-local units, the mark at the text's length. */
@@ -135,6 +135,7 @@ export function validReservationsPayload(value: unknown): value is DocxReservati
   const owners = new Set<string>();
   return value.sets.every((set: unknown) => {
     if (!record(set) || !text(set.owner) || !set.owner || owners.has(set.owner)) return false;
+    if (set.version !== undefined && (!text(set.version) || !set.version)) return false;
     if (!Array.isArray(set.items)) return false;
     owners.add(set.owner);
     const ids = new Set<string>();
@@ -188,7 +189,8 @@ function segments(indexFor: (story: string) => StoryIndex, range: RawAnchorRange
 export function resolveReservations(
   reader: AnchorReader,
   payload: DocxReservationsPayload,
-  readerVersion: string = payload.version
+  readerVersion: string = payload.version,
+  previous: DocxResolvedReservations | null = null
 ): DocxResolvedReservations {
   const stories = new Map<string, StoryIndex>();
   const indexFor = (story: string): StoryIndex => {
@@ -221,7 +223,17 @@ export function resolveReservations(
     },
   };
   const resolved: DocxResolvedReservations = {};
-  for (const { owner, items } of payload.sets) {
+  const priorOwners = new Map<string, [string, DocxResolvedReservation][]>();
+  for (const [key, entry] of Object.entries(previous ?? {})) {
+    let entries = priorOwners.get(entry.owner);
+    if (!entries) priorOwners.set(entry.owner, entries = []);
+    entries.push([key, entry]);
+  }
+  for (const { owner, version, items } of payload.sets) {
+    if (version !== undefined && version !== payload.version) {
+      for (const [key, entry] of priorOwners.get(owner) ?? []) resolved[key] = entry;
+      continue;
+    }
     for (const item of items) {
       const anchor = item.anchor.kind === 'range'
         ? { ...item.anchor, version: item.anchor.version === payload.version ? readerVersion : '' }

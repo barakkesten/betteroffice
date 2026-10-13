@@ -264,12 +264,13 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
     const session = options.viewerSelection ? null : options.session;
     if (kept.payload === reservationsPayload && kept.session === session) return kept.resolved;
     if (reservationsPayload && session && readSessionVersion(session) !== reservationsPayload.version) {
-      return kept.resolved;
+      return kept.session === session ? kept.resolved : null;
     }
     let resolved: DocxResolvedReservations | null = null;
     const serial = ++reservationSerial.current;
     if (reservationsPayload && session) {
-      resolved = resolveReservations(session, reservationsPayload);
+      resolved = resolveReservations(session, reservationsPayload, reservationsPayload.version,
+        kept.session === session ? kept.resolved : null);
       keyResolvedReservations(resolved, reservationsPayload.version, serial);
     }
     resolvedRef.current = { payload: reservationsPayload, session, resolved, serial };

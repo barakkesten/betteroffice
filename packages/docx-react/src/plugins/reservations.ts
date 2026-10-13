@@ -29,29 +29,32 @@ function checkedSet(value: unknown): DocxReservationSet | null {
   return set;
 }
 
-/**
- * Every plugin's reservations at the document version plugins see, as one payload. Plugins are
- * asked again only when their state, the version or the write mode changed, so a new layout
- * alone never re-evaluates them. Returns the previous payload while a plugin's set is at another
- * version, and null while no plugin reserves anything.
- */
+/** Combines current sets with each active owner's last current set while its replacement is stale. */
 export function usePluginReservations(
   host: DocxPluginHost,
   activations: readonly DocxPluginActivation[]
 ): DocxReservationsPayload | null {
   const evaluated = useRef(new WeakMap<object, Evaluated>());
+  const lastSets = useRef(new Map<string, DocxReservationSet>());
+  const generation = useRef<string | null>(null);
   const previous = useRef<{ json: string; payload: DocxReservationsPayload | null }>({
     json: 'null',
     payload: null,
   });
   return useMemo(() => {
+    if (generation.current !== host.generation()) {
+      lastSets.current.clear();
+      generation.current = host.generation();
+    }
     const version = host.version();
-    const sets: { owner: string; items: DocxReservationSet['items'] }[] = [];
+    const sets: DocxReservationsPayload['sets'][number][] = [];
+    const seen = new Set<string>();
     let defined = false;
     for (const activation of activations) {
       const generate = activation.plugin.reservations;
       if (!generate) continue;
       defined = true;
+      seen.add(activation.pluginId);
       const { snapshot } = activation.context;
       const state = activation.context.state;
       let entry = evaluated.current.get(activation.activation);
@@ -80,9 +83,20 @@ export function usePluginReservations(
         };
         evaluated.current.set(activation.activation, entry);
       }
-      if (!entry.set) continue;
-      if (entry.set.version !== version) return previous.current.payload;
-      sets.push({ owner: activation.pluginId, items: entry.set.items });
+      if (!entry.set) {
+        lastSets.current.delete(activation.pluginId);
+        continue;
+      }
+      if (entry.set.version === version) {
+        lastSets.current.set(activation.pluginId, entry.set);
+        sets.push({ owner: activation.pluginId, items: entry.set.items });
+      } else {
+        const prior = lastSets.current.get(activation.pluginId);
+        if (prior) sets.push({ owner: activation.pluginId, version: prior.version, items: prior.items });
+      }
+    }
+    for (const owner of lastSets.current.keys()) {
+      if (!seen.has(owner)) lastSets.current.delete(owner);
     }
     const payload = defined ? { version, sets } : null;
     const json = JSON.stringify(payload);

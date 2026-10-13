@@ -427,7 +427,8 @@ export function applyDocxCommand(
   if (command.kind === 'setRenderEnvironment') {
     const { reservations, ...rest } = command.payload;
     environment!.setRenderEnvironment!(reservations?.version === String(context.currentVersion)
-      ? { ...rest, reservations: resolveReservations(engine.geometryReader, reservations, engine.proposalEngine.version()) }
+      ? { ...rest, reservations: resolveReservations(engine.geometryReader, reservations, engine.proposalEngine.version(),
+        environment?.getLayoutReservations?.() ?? null) }
       : rest);
     return result('noop');
   }

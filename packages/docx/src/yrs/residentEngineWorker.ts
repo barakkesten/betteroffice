@@ -178,6 +178,9 @@ function bindResidentCommands(init: ResidentCommandInitRequest): ResidentCommand
     return selectionQueries.queries;
   };
   const hooks = commandHooksFactory(engine, init, {
+    getLayoutReservations() {
+      return (JSON.parse(init.layoutInput) as { renderEnv?: YrsRenderEnv }).renderEnv?.reservations ?? null;
+    },
     setRenderEnvironment(environment) {
       const input = JSON.parse(init.layoutInput);
       input.renderEnv = { ...input.renderEnv, ...environment };
@@ -2079,7 +2082,7 @@ function resolveLayoutReservationInput(
   if (validReservationsPayload(payload) && payload.version === version) {
     reservations = previous?.version === version && previous.key === key
       ? previous.reservations
-      : resolveReservations(engine.geometryReader, payload, version);
+      : resolveReservations(engine.geometryReader, payload, version, previous?.reservations ?? null);
     if (apply) appliedLayoutReservations.set(engine, { version, key, reservations });
   }
   delete input.renderEnv!.reservationSets;

@@ -331,6 +331,7 @@ export interface ResidentCommandHooks {
 export interface ResidentCommandHooksEnvironment {
   supportsFontEnvironment?: boolean;
   readSelectionLayout(): DocxCommandSelectionLayout;
+  getLayoutReservations?(): DocxResolvedReservations | null;
   /** Omits `reservations` to keep the current ones. */
   setRenderEnvironment?(environment: {
     themeColors: Record<string, string>;

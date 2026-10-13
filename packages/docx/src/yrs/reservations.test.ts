@@ -62,7 +62,8 @@ test('reservation carried sets retain only their previous owner entries', async 
     const previous = resolveReservations(session, { ...original, sets: [
       ...original.sets, { owner: 'removed', items: original.sets[0]!.items },
     ] });
-    const carried = { version: session.version(), sets: [{ ...original.sets[0]!, version: 'older' }] };
+    session.insertText({ story: 'body', paraId: session.paragraphs('body')[0]!.paraId, offset: 0 }, 'X');
+    const carried = { version: session.version(), sets: [{ ...original.sets[0]!, version: original.version }] };
     expect(validReservationsPayload(carried)).toBe(true);
     const result = resolveReservations(session, carried, session.version(), previous);
     const retained = Object.fromEntries(Object.entries(previous).filter(([, entry]) => entry.owner === 'a'));
