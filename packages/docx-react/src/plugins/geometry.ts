@@ -11,6 +11,7 @@ import {
   proposalSetIdentity,
   resolvedTargetGeometry,
   type AnchorGeometryTarget,
+  type DocxReservationsPayload,
   type DocxResolvedReservations,
   type ProposalGeometryMirror,
   type ProposalGeometryTarget,
@@ -174,7 +175,11 @@ export interface AnchorGeometryAccess {
   /** Whether the pages show this layout's pixels. */
   presented: boolean;
   /** The reservations last resolved for layout and their key; '' keys none. */
-  reservations?(): { key: string; resolved: DocxResolvedReservations | null };
+  reservations?(): {
+    key: string;
+    resolved: DocxResolvedReservations | null;
+    payload?: DocxReservationsPayload | null;
+  };
 }
 
 interface Interval {
@@ -260,7 +265,7 @@ export function createPluginGeometry(
   current: () => boolean,
   resolve: (hit: PointPosition | null) => DocxPointPosition | null,
   queries: DisplayListQueries,
-  access: () => AnchorGeometryAccess | null,
+  access: (reservation?: boolean) => AnchorGeometryAccess | null,
   held: () => boolean = () => false,
   readPoint?: (clientX: number, clientY: number) => Promise<DocxPointPosition | null>,
   complete: () => boolean = () => false
@@ -425,10 +430,12 @@ export function createPluginGeometry(
   /** Places `target`, or the raw ranges a caller resolved itself. */
   const anchorGeometry = (
     target: AnchorGeometryTarget | null,
-    raw?: { ok: true; ranges: RawAnchorRange[]; paragraph: YrsLoc }
+    raw?: { ok: true; ranges: RawAnchorRange[]; paragraph: YrsLoc },
+    reservationTarget = false,
+    hiddenTarget = false
   ): DocxAnchorGeometryResult => {
     if (!shown()) return unavailable();
-    const live = access();
+    const live = access(reservationTarget);
     if (!live || !live.presented || live.editor.hasPendingInput()) return unavailable();
     const { session, editor } = live;
     if (session.version() !== layout.version) {
@@ -498,13 +505,15 @@ export function createPluginGeometry(
       )
     )
       return unavailable();
-    const hidden =
-      (mirror && (!hasEditorWorkerProposalRounds(session) || !workerOpenReplicaReady(session))
+    const hidden = [
+      ...((mirror && (!hasEditorWorkerProposalRounds(session) || !workerOpenReplicaReady(session))
         ? mirror.hidden
         : undefined) ??
       hiddenRanges(session, layout.version)
         .map(display)
-        .filter((range): range is Interval => range !== null);
+        .filter((range): range is Interval => range !== null)),
+      ...(hiddenTarget ? ranges : []),
+    ];
     const drawn: DisplayListRect[] = [];
     let tail: Interval | null = null;
     for (const { from, to } of unionOf(subtract(ranges, hidden))) {
@@ -537,7 +546,7 @@ export function createPluginGeometry(
   /** This layout's box for `owner`'s reservation `id`, or a hidden range's boundary. */
   const reservation = (owner: string, id: string): DocxAnchorGeometryResult => {
     if (!shown()) return unavailable();
-    const live = access();
+    const live = access(true);
     if (!live || !live.presented || live.editor.hasPendingInput()) return unavailable();
     if (live.session.version() !== layout.version) {
       return anchorFailure('stale-version', 'The document changed after that version');
@@ -545,16 +554,21 @@ export function createPluginGeometry(
     const current = live.reservations?.();
     if (!current || reservationsKeyOf(queries) !== current.key) return unavailable();
     const entry = current.resolved?.[JSON.stringify([owner, id])];
-    if (!entry) return anchorFailure('missing-target', 'The reservation did not resolve');
-    if (entry.kind === 'hide') {
+    const item = current.payload?.sets.find((set) => set.owner === owner)?.items.find((item) => item.id === id);
+    if (!entry && !item) return anchorFailure('missing-target', 'The reservation did not resolve');
+    if (item?.kind === 'hide') return anchorGeometry(item.anchor, undefined, true, true);
+    if (entry?.kind === 'hide') {
       const at = (offset: number): YrsLoc => ({ story: entry.story, paraId: entry.paraId, offset });
-      const length = live.session.paragraphSpans(entry.story)
-        .find((span) => span.paraId === entry.paraId)?.length ?? entry.end;
+      const span = live.session.paragraphSpans(entry.story).find((span) => span.paraId === entry.paraId);
+      if (!span || entry.start > span.length || entry.end > span.length + 1) {
+        return anchorFailure('missing-target', 'The reservation did not resolve');
+      }
+      const length = span.length;
       return anchorGeometry(null, {
         ok: true,
         ranges: [{ start: at(entry.start), end: at(Math.min(entry.end, length)) }],
         paragraph: at(0),
-      });
+      }, false, true);
     }
     const pages = queries.displayList?.pages ?? [];
     let pending = false;

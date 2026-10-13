@@ -2640,6 +2640,7 @@ const LegacyDocxEditor = forwardRef<DocxEditorRef, DocxEditorProps>(function Leg
               yrsCore={yrsCore}
               pluginHostOpen={pluginHostSession !== null}
               reservations={pluginHost.reservations}
+              reservationSets={pluginHost.reservationSets}
               onError={reportPagedError}
               collaboration={collaboration}
               pagedEditorRef={pagedEditorRef}

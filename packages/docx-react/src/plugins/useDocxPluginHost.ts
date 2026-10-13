@@ -23,6 +23,7 @@ import type { RenderedDomContext } from '@betteroffice/docx/plugin-api';
 import type { ResidentDocumentReadValues } from '@betteroffice/docx/yrs/residentEngineWorkerProtocol';
 import {
   resolveReservations,
+  type AnchorGeometryTarget,
   type DocxReservationsPayload,
   type DocxResolvedReservations,
   type ResidentEngineWorkerClient,
@@ -112,6 +113,7 @@ export interface DocxPluginHostBinding {
   publishViewerSelection(selection: ViewerSelectionChange): void;
   /** The plugins' reservations resolved at the version they were computed at, or null. */
   reservations: DocxResolvedReservations | null;
+  reservationSets: DocxReservationsPayload | null;
 }
 
 /** Whether `queries` show the editor's whole, final layout. */
@@ -250,6 +252,7 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
 
   const activations = useSyncExternalStore(host.subscribe, host.activations, () => NO_ACTIVATIONS);
   const reservationsPayload = usePluginReservations(host, managed ? activations : NO_ACTIVATIONS);
+  const reservationSerial = useRef(0);
   const resolvedRef = useRef<{
     payload: DocxReservationsPayload | null;
     session: YrsSession | null;
@@ -264,7 +267,7 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
       return kept.resolved;
     }
     let resolved: DocxResolvedReservations | null = null;
-    const serial = kept.serial + 1;
+    const serial = ++reservationSerial.current;
     if (reservationsPayload && session) {
       resolved = resolveReservations(session, reservationsPayload);
       keyResolvedReservations(resolved, reservationsPayload.version, serial);
@@ -272,8 +275,13 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
     resolvedRef.current = { payload: reservationsPayload, session, resolved, serial };
     return resolved;
   }, [reservationsPayload, options.session, options.viewerSelection]);
-  const reservationsRef = useRef(reservations);
-  reservationsRef.current = reservations;
+  const reservationSets = useMemo(() => {
+    const payload = options.viewerSelection ? reservationsPayload : null;
+    if (payload) keyResolvedReservations(payload, payload.version, ++reservationSerial.current);
+    return payload;
+  }, [reservationsPayload, options.viewerSelection]);
+  const reservationsRef = useRef({ resolved: reservations, payload: reservationSets });
+  reservationsRef.current = { resolved: reservations, payload: reservationSets };
 
   const publishSelection = useCallback(() => {
     if (!latest.current.plugins?.length) return;
@@ -387,6 +395,33 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
   const currentLayout = layoutStable.current;
   layoutRef.current = currentLayout;
 
+  const viewerReservationTargets = useRef<{
+    read: ResidentEngineWorkerClient['documentRead'];
+    version: string;
+    targets: Map<string, ResidentDocumentReadValues['anchorTargets'][number]>;
+    pending: Set<string>;
+  } | null>(null);
+  const viewerReservationTarget = useCallback((target: Exclude<AnchorGeometryTarget, { kind: 'proposal' }>) => {
+    const read = latest.current.viewerDocumentRead;
+    const version = host.version();
+    if (!read || !version) return undefined;
+    if (viewerReservationTargets.current?.version !== version || viewerReservationTargets.current.read !== read) {
+      viewerReservationTargets.current = { read, version, targets: new Map(), pending: new Set() };
+    }
+    const cache = viewerReservationTargets.current;
+    const key = JSON.stringify(target);
+    if (!cache.targets.has(key) && !cache.pending.has(key)) {
+      cache.pending.add(key);
+      void read({ kind: 'anchorTargets', targets: [target] }).then((reply) => {
+        if (viewerReservationTargets.current !== cache || latest.current.viewerDocumentRead !== read ||
+          host.version() !== version || reply.version !== version || !reply.value[0]) return;
+        cache.targets.set(key, reply.value[0]);
+        setMoved((value) => value + 1);
+      }, () => undefined).finally(() => cache.pending.delete(key));
+    }
+    return cache.targets.get(key);
+  }, [host]);
+
   const geometry = useMemo(() => {
     if (!currentLayout || !dom || dom.queries !== options.queries || !layer) return null;
     const shownList = dom.queries.displayList;
@@ -409,27 +444,28 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
           dom.queries
         ),
       dom.queries,
-      () => {
+      (reservation = false) => {
         const editor = latest.current.pagedEditorRef.current;
         const session = editor?.getYrsSession();
         const active = session && hasEditorWorkerProposalRounds(session);
         const authority = session
           ? active
-            ? proposalTarget ? workerProposalRoundAuthority(session) : null
+            ? proposalTarget || reservation ? workerProposalRoundAuthority(session) : null
             : workerProposalAuthority(session)
           : null;
         const proposalGeometry = authority?.geometry();
-        return editor && session && (!active || proposalTarget || workerOpenReplicaReady(session))
+        return editor && session && (!active || reservation || proposalTarget || workerOpenReplicaReady(session))
           ? {
               session,
               editor,
               presented: isPresented(dom.context.pagesContainer, dom.queries.displayList),
               reservations: () => ({
-                key: resolvedReservationsKey(reservationsRef.current),
-                resolved: reservationsRef.current,
+                key: resolvedReservationsKey(reservationsRef.current.payload ?? reservationsRef.current.resolved),
+                ...reservationsRef.current,
               }),
               ...(authority && proposalGeometry
-                ? { proposalGeometry, anchorTarget: authority.anchorTarget }
+                ? { proposalGeometry, anchorTarget: reservation && latest.current.viewerSelection
+                    ? viewerReservationTarget : authority.anchorTarget }
                 : {}),
             }
           : null;
@@ -454,7 +490,7 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
     return created;
     // `moved` rebuilds the geometry when its elements move without a new frame.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [host, currentLayout, dom, options.queries, layer, moved]);
+  }, [host, currentLayout, dom, options.queries, layer, moved, viewerReservationTarget]);
   geometryRef.current = geometry;
   // Overlays keep the geometry the host last adopted until geometry for its next layout exists.
   const adopted = geometry && host.layoutId() === geometry.layout.id ? geometry : null;
@@ -588,6 +624,7 @@ export function useDocxPluginHost(options: UseDocxPluginHostOptions): DocxPlugin
     managed,
     activations: managed ? activations : NO_ACTIVATIONS,
     reservations,
+    reservationSets,
     sidebarItems,
     renderedDomContext: dom?.context ?? null,
     heldGeometry,
