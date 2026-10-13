@@ -1278,6 +1278,70 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
     expect(image.anchor.x).toBeCloseTo(image.rects[0]!.x + image.rects[0]!.width);
   });
 
+  test('a viewer opened read-only lays out inline and block reservations without loading its replica', async () => {
+    let geometry: DocxPluginGeometry | null = null;
+    const buffer = await inlineImageDocument(
+      '<w:p w14:paraId="00000001"><w:r><w:t>First paragraph text</w:t></w:r></w:p>' +
+      '<w:p w14:paraId="00000002"><w:r><w:t>Second</w:t></w:r></w:p>'
+    );
+    const { ref, rerender } = await mount({ readOnly: true }, false, buffer);
+    const { version, paragraph } = await firstParagraph(ref);
+    const replicaLoads = () => workers.reduce(
+      (count, worker) => count + worker.requests.filter((type) => type === 'encodeState').length, 0
+    );
+    const loadsBefore = replicaLoads();
+    const session = ref.current!.getEditorRef()!.getYrsSession()!;
+    const loaded = spyOn(session, 'loadState');
+    const plugin = defineDocxPlugin({
+      id: 'host.viewer-reserve',
+      createState: () => null,
+      reservations: () => ({
+        version,
+        items: [
+          {
+            id: 'chip', kind: 'inline', width: 40, height: 20,
+            anchor: { kind: 'range', version, range: {
+              story: paragraph.story, view: 'accepted',
+              start: { paraId: paragraph.paraId, offset: 6 },
+              end: { paraId: paragraph.paraId, offset: 6 },
+            } },
+          },
+          {
+            id: 'gap', kind: 'block', side: 'after', height: 60,
+            anchor: { kind: 'range', version, range: {
+              story: paragraph.story, view: 'accepted',
+              start: { paraId: paragraph.paraId, offset: 0 },
+              end: { paraId: paragraph.paraId, offset: 0 },
+            } },
+          },
+        ],
+      }),
+      overlay: (props) => { geometry = props.geometry; return null; },
+    });
+    try {
+      rerender({ readOnly: true, plugins: [plugin] });
+      await until(() => (geometry as DocxPluginGeometry | null)?.layout.reservationsVersion === version);
+      const current = geometry! as DocxPluginGeometry;
+      current.dom.pagesContainer.getBoundingClientRect = () => new DOMRect(0, 0, 800, 1200);
+      for (const canvas of current.dom.pagesContainer.querySelectorAll('canvas[data-page-index]')) {
+        canvas.getBoundingClientRect = () => new DOMRect(0, 0, 800, 1000);
+      }
+      const chip = current.getAnchorGeometry({ kind: 'reservation', id: 'chip' });
+      const gap = current.getAnchorGeometry({ kind: 'reservation', id: 'gap' });
+      expect(chip.ok).toBe(true);
+      expect(gap.ok).toBe(true);
+      if (!chip.ok || !gap.ok) throw new Error('reservation geometry failed');
+      expect(chip.rects).toEqual([chip.anchor]);
+      expect(chip.anchor.height / chip.anchor.width).toBeCloseTo(0.5);
+      expect(gap.anchor.height).toBeCloseTo(chip.anchor.height * 3);
+      expect(gap.anchor.y).toBeGreaterThan(chip.anchor.y);
+      expect(replicaLoads()).toBe(loadsBefore);
+      expect(loaded).not.toHaveBeenCalled();
+    } finally {
+      loaded.mockRestore();
+    }
+  });
+
   test('reservations take layout space geometry reports, read-only, and never reach saved bytes', async () => {
     let geometry: DocxPluginGeometry | null = null;
     const buffer = await inlineImageDocument(
