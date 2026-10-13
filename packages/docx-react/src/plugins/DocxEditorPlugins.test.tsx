@@ -14,11 +14,13 @@ import {
   createYrsSession,
   takePreloadedResidentEngineWorker,
   type DocxEditRequest,
+  type YrsSession,
 } from '@betteroffice/docx/yrs';
 import {
   residentWorkerFactory,
   type InProcessResidentWorker,
 } from '@betteroffice/docx/yrs/__fixtures__/residentWorker';
+import * as yrs from '@betteroffice/docx/yrs';
 import * as wasm from '@betteroffice/docx/yrs/wasm/index';
 import * as publicApi from '../index';
 import {
@@ -201,17 +203,23 @@ async function mountEditor(
   experimentalWorkerOpen: false | undefined
 ) {
   const ref = createRef<DocxEditorRef>();
+  const errors: Error[] = [];
   const opens = workers.reduce(
     (count, worker) => count + worker.requests.filter((type) => type === 'open').length, 0
   );
+  let currentProps = props;
+  const onError = (error: Error) => { errors.push(error); currentProps.onError?.(error); };
   const element = (next: Partial<DocxEditorProps>) => {
+    currentProps = next;
     const editor = experimentalWorkerOpen === false
-      ? <DocxEditor ref={ref} experimentalWorkerOpen={false} documentBuffer={buffer} {...next} />
-      : <DocxEditor ref={ref} documentBuffer={buffer} {...next} />;
+      ? <DocxEditor ref={ref} experimentalWorkerOpen={false} documentBuffer={buffer} {...next} onError={onError} />
+      : <DocxEditor ref={ref} documentBuffer={buffer} {...next} onError={onError} />;
     return strict ? <StrictMode>{editor}</StrictMode> : editor;
   };
   const view = render(element(props));
-  await until(() => ref.current?.commands.getState('save').enabled === true);
+  await until(() => ref.current?.commands.getState('save').enabled === true || errors.length > 0);
+  expect(errors).toEqual([]);
+  expect(ref.current?.commands.getState('save').enabled).toBe(true);
   if (experimentalWorkerOpen === undefined) {
     expect(workers.length).toBeGreaterThan(0);
     expect(workers.some(
@@ -303,6 +311,7 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
     });
     await until(() => log.includes('load:loaded'));
     expect(log.slice(0, 2)).toEqual(['initialize', 'load:loaded']);
+    const changeCount = () => log.filter((entry) => entry.startsWith('document-change')).length;
     const loadVersion = contexts[1].snapshot.version;
 
     const { version, paragraph } = await firstParagraph(ref);
@@ -312,7 +321,7 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       applied = await ref.current!.applyEdits(appendRequest(version, paragraph.paraId));
     });
     expect(applied).toMatchObject({ ok: true, applied: true });
-    await settle(150);
+    await until(() => changeCount() === 1);
     const changes = log.filter((entry) => entry.startsWith('document-change'));
     expect(changes).toEqual([`document-change:${applied.ok ? applied.version : ''}`]);
 
@@ -320,7 +329,7 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       const stale = await ref.current!.applyEdits(appendRequest(version, paragraph.paraId));
       expect(stale).toMatchObject({ ok: false, failure: { code: 'stale-version' } });
     });
-    await settle(150);
+    await act(async () => {});
     expect(log.filter((entry) => entry.startsWith('document-change'))).toHaveLength(1);
 
     const session = experimentalWorkerOpen === false
@@ -335,7 +344,7 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
           });
         }
       });
-      await settle(150);
+      await until(() => changeCount() === (step === 'undo' ? 2 : 3));
       expect(log.filter((entry) => entry.startsWith('document-change')).at(-1)).toBe(
         `document-change:${session ? session.version() : (await firstParagraph(ref)).version}`
       );
@@ -354,7 +363,7 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       });
       expect(noop).toMatchObject({ ok: true, applied: false });
     });
-    await settle(150);
+    await act(async () => {});
     expect(log.filter((entry) => entry.startsWith('document-change'))).toHaveLength(3);
     const replica = await createYrsSession({ clientId: 5151 });
     try {
@@ -372,7 +381,7 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       await act(async () => {
         transport.applyUpdate(replica.encodeStateAsUpdate(transport.encodeStateVector()));
       });
-      await settle(150);
+      await until(() => changeCount() === 4);
     } finally {
       replica.destroy();
     }
@@ -1284,47 +1293,58 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       '<w:p w14:paraId="00000001"><w:r><w:t>First paragraph text</w:t></w:r></w:p>' +
       '<w:p w14:paraId="00000002"><w:r><w:t>Second</w:t></w:r></w:p>'
     );
-    const { ref, rerender } = await mount({ readOnly: true }, false, buffer);
-    const { version, paragraph } = await firstParagraph(ref);
-    const replicaLoads = () => workers.reduce(
-      (count, worker) => count + worker.requests.filter((type) => type === 'encodeState').length, 0
-    );
-    const loadsBefore = replicaLoads();
-    const session = ref.current!.getEditorRef()!.getYrsSession()!;
-    const loaded = spyOn(session, 'loadState');
-    const plugin = defineDocxPlugin({
-      id: 'host.viewer-reserve',
-      createState: () => null,
-      reservations: () => ({
-        version,
-        items: [
-          {
-            id: 'chip', kind: 'inline', width: 40, height: 20,
-            anchor: { kind: 'range', version, range: {
-              story: paragraph.story, view: 'accepted',
-              start: { paraId: paragraph.paraId, offset: 6 },
-              end: { paraId: paragraph.paraId, offset: 6 },
-            } },
-          },
-          {
-            id: 'gap', kind: 'block', side: 'after', height: 60,
-            anchor: { kind: 'range', version, range: {
-              story: paragraph.story, view: 'accepted',
-              start: { paraId: paragraph.paraId, offset: 0 },
-              end: { paraId: paragraph.paraId, offset: 0 },
-            } },
-          },
-        ],
-      }),
-      overlay: (props) => { geometry = props.geometry; return null; },
+    const loadSpies: Array<ReturnType<typeof spyOn<YrsSession, 'loadState'>>> = [];
+    const createSession = yrs.createYrsSession;
+    const opening = spyOn(yrs, 'createYrsSession').mockImplementation(async (options) => {
+      const session = await createSession(options);
+      loadSpies.push(spyOn(session, 'loadState'));
+      return session;
     });
     try {
+      const { ref, rerender } = await mount({ readOnly: true }, false, buffer);
+      const { version, paragraph } = await firstParagraph(ref);
+      const replicaLoads = () => workers.reduce(
+        (count, worker) => count + worker.requests.filter((type) => type === 'encodeState').length, 0
+      );
+      const loadsBefore = replicaLoads();
+      expect(loadSpies.length).toBeGreaterThan(0);
+      for (const loaded of loadSpies) loaded.mockClear();
+      const plugin = defineDocxPlugin({
+        id: 'host.viewer-reserve',
+        createState: () => null,
+        reservations: () => ({
+          version,
+          items: [
+            {
+              id: 'chip', kind: 'inline', width: 40, height: 20,
+              anchor: { kind: 'range', version, range: {
+                story: paragraph.story, view: 'accepted',
+                start: { paraId: paragraph.paraId, offset: 6 },
+                end: { paraId: paragraph.paraId, offset: 6 },
+              } },
+            },
+            {
+              id: 'gap', kind: 'block', side: 'after', height: 60,
+              anchor: { kind: 'range', version, range: {
+                story: paragraph.story, view: 'accepted',
+                start: { paraId: paragraph.paraId, offset: 0 },
+                end: { paraId: paragraph.paraId, offset: 0 },
+              } },
+            },
+          ],
+        }),
+        overlay: (props) => { geometry = props.geometry; return null; },
+      });
       rerender({ readOnly: true, plugins: [plugin] });
       await until(() => (geometry as DocxPluginGeometry | null)?.layout.reservationsVersion === version);
       const current = geometry! as DocxPluginGeometry;
       current.dom.pagesContainer.getBoundingClientRect = () => new DOMRect(0, 0, 800, 1200);
-      for (const canvas of current.dom.pagesContainer.querySelectorAll('canvas[data-page-index]')) {
-        canvas.getBoundingClientRect = () => new DOMRect(0, 0, 800, 1000);
+      for (const canvas of current.dom.pagesContainer.querySelectorAll<HTMLCanvasElement>('canvas[data-page-index]')) {
+        const width = Number.parseFloat(canvas.style.width);
+        const height = Number.parseFloat(canvas.style.height);
+        expect(width).toBeGreaterThan(0);
+        expect(height).toBeGreaterThan(0);
+        canvas.getBoundingClientRect = () => new DOMRect(0, 0, width, height);
       }
       const chip = current.getAnchorGeometry({ kind: 'reservation', id: 'chip' });
       const gap = current.getAnchorGeometry({ kind: 'reservation', id: 'gap' });
@@ -1336,9 +1356,10 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       expect(gap.anchor.height).toBeCloseTo(chip.anchor.height * 3);
       expect(gap.anchor.y).toBeGreaterThan(chip.anchor.y);
       expect(replicaLoads()).toBe(loadsBefore);
-      expect(loaded).not.toHaveBeenCalled();
+      for (const loaded of loadSpies) expect(loaded).not.toHaveBeenCalled();
     } finally {
-      loaded.mockRestore();
+      opening.mockRestore();
+      for (const loaded of loadSpies) loaded.mockRestore();
     }
   });
 
@@ -1383,8 +1404,12 @@ describe.each(editorEngines)('DocxEditor plugins (%s engine)', (_engine, experim
       });
       const current = geometry! as DocxPluginGeometry;
       current.dom.pagesContainer.getBoundingClientRect = () => new DOMRect(0, 0, 800, 1200);
-      for (const canvas of current.dom.pagesContainer.querySelectorAll('canvas[data-page-index]')) {
-        canvas.getBoundingClientRect = () => new DOMRect(0, 0, 800, 1000);
+      for (const canvas of current.dom.pagesContainer.querySelectorAll<HTMLCanvasElement>('canvas[data-page-index]')) {
+        const width = Number.parseFloat(canvas.style.width);
+        const height = Number.parseFloat(canvas.style.height);
+        expect(width).toBeGreaterThan(0);
+        expect(height).toBeGreaterThan(0);
+        canvas.getBoundingClientRect = () => new DOMRect(0, 0, width, height);
       }
       const chip = current.getAnchorGeometry({ kind: 'reservation', id: 'chip' });
       const gap = current.getAnchorGeometry({ kind: 'reservation', id: 'gap' });
