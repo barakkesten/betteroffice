@@ -46,7 +46,7 @@ import type {
 } from './edits';
 import type { DocxParagraphHeading } from './readTypes';
 import type { DocxListStoriesResult } from './stories';
-import type { DocxResolvedReservations } from './reservations';
+import type { DocxReservationsPayload, DocxResolvedReservations } from './reservations';
 import {
   type DocxProposalRegistryState,
   type DocxProposalRequest,
@@ -621,6 +621,8 @@ export interface YrsRenderEnv {
   revisionPreview?: Readonly<Record<string, 'accepted' | 'rejected'>>;
   /** View-only layout reservations; saves and paged exports leave them out. @internal */
   reservations?: Readonly<DocxResolvedReservations>;
+  /** Unresolved viewer reservations for resident layout requests. @internal */
+  reservationSets?: DocxReservationsPayload;
   /**
    * Lay the opened package's images out as `media:{n}` tokens, which a
    * resolver given the session's `mediaSource` reads. @internal

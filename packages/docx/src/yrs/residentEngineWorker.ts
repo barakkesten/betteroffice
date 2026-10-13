@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { resolveReservations, validReservationsPayload, type DocxResolvedReservations } from './reservations';
 import { readResidentRangeHighlights } from './residentRangeHighlights';
 import { LAYOUT_META_VERSION, type LayoutMetaV1, type RetainedLayoutMeta } from './layoutMeta';
 import { isCommandOutcomeUnknownError } from '../../../../shared/office-session/commands/types';
@@ -28,7 +29,7 @@ import type {
   ResidentDocxCommandEngine,
 } from './residentCommandProtocol';
 import type { CollaborationCursor } from '../collaboration/types';
-import type { YrsLoc, YrsResidentCaretRect, YrsResidentWorkerSnapshot } from './index';
+import type { YrsLoc, YrsRenderEnv, YrsResidentCaretRect, YrsResidentWorkerSnapshot } from './index';
 import { createDisplayListQueries } from '../layout/render/displayListQueries';
 import {
   createResidentEngineSession,
@@ -1578,7 +1579,10 @@ async function handle(request: ResidentEngineWorkerRequest): Promise<void> {
         value = session.sectionProperties();
         break;
       case 'exportStructuredWithPages':
-        value = session.exportStructuredWithPagesJson(request.read.options, request.read.currentRequest);
+        value = session.exportStructuredWithPagesJson(
+          request.read.options,
+          resolveLayoutReservationInput(session, request.read.currentRequest)
+        );
         break;
       case 'listContentControls':
         value = session.listContentControls(request.read.options);
@@ -2047,6 +2051,42 @@ function validateFontsBaseRevision(snapshot: YrsResidentWorkerSnapshot): void {
   }
 }
 
+const appliedLayoutReservations = new WeakMap<ResidentEngineSession, {
+  version: string;
+  key: string;
+  reservations: DocxResolvedReservations;
+}>();
+
+function resolveLayoutReservationInput(
+  engine: ResidentEngineSession,
+  layoutInput: string,
+  apply = false
+): string {
+  if (!layoutInput.includes('"reservationSets"')) {
+    if (apply) appliedLayoutReservations.delete(engine);
+    return layoutInput;
+  }
+  const input = JSON.parse(layoutInput) as { renderEnv?: YrsRenderEnv };
+  const payload = input.renderEnv?.reservationSets;
+  if (payload === undefined) {
+    if (apply) appliedLayoutReservations.delete(engine);
+    return layoutInput;
+  }
+  const version = engine.proposalEngine.version();
+  const previous = appliedLayoutReservations.get(engine);
+  const key = JSON.stringify(payload);
+  let reservations = previous?.reservations ?? {};
+  if (validReservationsPayload(payload) && payload.version === version) {
+    reservations = previous?.version === version && previous.key === key
+      ? previous.reservations
+      : resolveReservations(engine.geometryReader, payload, version);
+    if (apply) appliedLayoutReservations.set(engine, { version, key, reservations });
+  }
+  delete input.renderEnv!.reservationSets;
+  input.renderEnv!.reservations = reservations;
+  return JSON.stringify(input);
+}
+
 /**
  * Loads a snapshot and runs its layout, over the first `provisionalPages`
  * pages only when given; returns the region layout reply, which a full pass
@@ -2104,6 +2144,7 @@ function hydrate(
     }
     fontsRevision = snapshot.fontsRevision;
   }
+  snapshot.layoutInput = resolveLayoutReservationInput(session, snapshot.layoutInput, true);
   for (const { story, env } of snapshot.renderInputs) session.yrsBlocksForStory(story, env);
   for (const input of snapshot.measureInputs) session.measureParagraphJson(input);
   let layoutJson: string | null = null;
@@ -2199,7 +2240,7 @@ function layoutFontRequirements(engine: ResidentEngineSession, layoutInput: stri
   }
   const cached = requirementsCache.byInput.get(layoutInput);
   if (cached !== undefined) return cached;
-  const requirementsJson = engine.layoutFontRequirementsJson(layoutInput);
+  const requirementsJson = engine.layoutFontRequirementsJson(resolveLayoutReservationInput(engine, layoutInput));
   if (requirementsCache.byInput.size >= REQUIREMENTS_CACHE_INPUTS) {
     requirementsCache.byInput.delete(requirementsCache.byInput.keys().next().value as string);
   }
