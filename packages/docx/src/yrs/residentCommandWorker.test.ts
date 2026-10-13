@@ -236,8 +236,11 @@ test('render environment reservations lay out at their command version and never
       version: '0', sets: [{ owner: 'plugin', items: [inline('0', -1)] }],
     })));
     expect(invalid.outcomes[0]).toMatchObject({ status: 'refused', reason: 'invalid-payload' });
+    if (invalid.frame) frame = applyFrameDeltaOwned(frame, decodeFrameDelta(invalid.frame.payload.frame));
 
-    await client.edit(intent(4, 0, 'setReadOnly', { readOnly: true }));
+    const locked = await client.edit(intent(4, 0, 'setReadOnly', { readOnly: true }));
+    expect(locked.outcomes[0]?.status).toBe('noop');
+    if (locked.frame) frame = applyFrameDeltaOwned(frame, decodeFrameDelta(locked.frame.payload.frame));
     const readOnly = await client.edit(intent(5, 0, 'setRenderEnvironment', environment({
       version: '0', sets: [{ owner: 'plugin', items: [{
         id: 'gap', kind: 'block', side: 'after', height: 50,
