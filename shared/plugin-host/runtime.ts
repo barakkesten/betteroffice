@@ -221,7 +221,7 @@ export function createPluginRuntime<
     (activation.status === 'ready' && !activation.running && !activation.pumping && !activation.pending.length)
   );
   const settleIdle = (): void => {
-    if (!notificationsIdle()) return;
+    if (!idleWaiters.size || !notificationsIdle()) return;
     for (const resolve of idleWaiters) resolve();
     idleWaiters.clear();
   };
