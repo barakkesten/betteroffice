@@ -259,6 +259,59 @@ test('render environment reservations lay out at their command version and never
   } finally { client.destroy(); }
 }, TIMEOUT);
 
+test('stale render environment reservations retain listed owners and clear removed owners after an edit', async () => {
+  const { client, engine, initial, point } = await openWorker();
+  const layouts = spyOn(engine, 'layoutDocumentWithRegionsRetained');
+  try {
+    const inline = (id: string, width: number, hideAnchor = false) => ({
+      id, kind: 'inline', width, height: 20, hideAnchor,
+      anchor: { kind: 'range', version: '0', range: {
+        story: 'body', view: 'accepted',
+        start: { paraId: point.paraId, offset: 0 }, end: { paraId: point.paraId, offset: 2 },
+      } },
+    });
+    const environment = (sets: unknown[]) => ({
+      themeColors: {}, showHiddenText: false, reservations: { version: '0', sets },
+    } as never);
+    const applied = () => JSON.parse(layouts.mock.calls.at(-1)![0]).renderEnv.reservations;
+    let frame = applyFrameDeltaOwned(null, decodeFrameDelta(initial.frame!.payload.frame));
+    const set = await client.edit(intent(1, 0, 'setRenderEnvironment', environment([
+      { owner: 'A', items: [inline('a', 35, true)] },
+      { owner: 'B', items: [inline('b', 20)] },
+    ])));
+    expect(set.outcomes[0]?.status).toBe('noop');
+    expect(Object.values(applied())).toHaveLength(2);
+    frame = applyFrameDeltaOwned(frame, decodeFrameDelta(set.frame!.payload.frame));
+    expect(frameText(frame)).toBe('ed');
+    const retained = applied()[JSON.stringify(['A', 'a'])];
+
+    const edited = await client.edit(intent(2, 0, 'insertText', { text: '!' }));
+    expect(edited.outcomes[0]?.status).toBe('applied');
+    expect(edited.version).toBe(1);
+    frame = applyFrameDeltaOwned(frame, decodeFrameDelta(edited.frame!.payload.frame));
+
+    const stale = await client.edit(intent(3, 1, 'setRenderEnvironment', environment([
+      { owner: 'A', items: [inline('a', 80)] },
+    ])));
+    expect(stale.outcomes[0]?.status).toBe('noop');
+    frame = applyFrameDeltaOwned(frame, decodeFrameDelta(stale.frame!.payload.frame));
+    expect(applied()).toEqual({ [JSON.stringify(['A', 'a'])]: retained });
+    expect(frame.displayList.pages.flatMap((page) => page.reservations ?? []))
+      .toEqual([expect.objectContaining({ owner: 'A', id: 'a', width: 35 })]);
+    expect(frameText(frame)).toBe('ed!');
+
+    const cleared = await client.edit(intent(4, 1, 'setRenderEnvironment', environment([])));
+    expect(cleared.outcomes[0]?.status).toBe('noop');
+    frame = applyFrameDeltaOwned(frame, decodeFrameDelta(cleared.frame!.payload.frame));
+    expect(applied()).toEqual({});
+    expect(frame.displayList.pages.flatMap((page) => page.reservations ?? [])).toEqual([]);
+    expect(frameText(frame)).toBe('Seed!');
+  } finally {
+    layouts.mockRestore();
+    client.destroy();
+  }
+}, TIMEOUT);
+
 test('the worker and a main-thread session lay out one reservation set identically', async () => {
   const bodyXml = '<w:p w14:paraId="00000001"><w:r><w:t>Alpha beta gamma</w:t></w:r></w:p>' +
     '<w:p w14:paraId="00000002"><w:r><w:t>Next</w:t></w:r></w:p>';
