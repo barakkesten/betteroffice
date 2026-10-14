@@ -64,6 +64,15 @@ export interface DocxResolvedReservation {
 /** @internal Resolved reservations by key, as `renderEnv.reservations` carries them. */
 export type DocxResolvedReservations = Record<string, DocxResolvedReservation>;
 
+/** @internal Retains applied entries for the payload's owners. */
+export function retainReservationOwners(
+  payload: DocxReservationsPayload,
+  previous: DocxResolvedReservations | null
+): DocxResolvedReservations {
+  const owners = new Set(payload.sets.map(({ owner }) => owner));
+  return Object.fromEntries(Object.entries(previous ?? {}).filter(([, entry]) => owners.has(entry.owner)));
+}
+
 const MAX_EXTENT = 100_000;
 
 type Fields = Record<string, unknown>;

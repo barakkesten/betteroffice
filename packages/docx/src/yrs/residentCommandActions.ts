@@ -11,7 +11,7 @@ import { validControlValue, resolveControlHandle } from './residentControls';
 import { propertyCommand, validPropertyCommand, propertyCommandTarget, applyPropertyCommand } from './residentPropertyCommands';
 import { validSectionMargins, nativeTabStops } from './residentSections';
 import { validFontEnvironment } from './residentFontEnvironment';
-import { resolveReservations, validReservationsPayload } from './reservations';
+import { resolveReservations, retainReservationOwners, validReservationsPayload } from './reservations';
 import type {
   DocxCommandApplyContext,
   DocxCommandApplyResult,
@@ -426,9 +426,11 @@ export function applyDocxCommand(
   };
   if (command.kind === 'setRenderEnvironment') {
     const { reservations, ...rest } = command.payload;
-    environment!.setRenderEnvironment!(reservations?.version === String(context.currentVersion)
-      ? { ...rest, reservations: resolveReservations(engine.geometryReader, reservations, engine.proposalEngine.version(),
-        environment?.getLayoutReservations?.() ?? null) }
+    environment!.setRenderEnvironment!(reservations
+      ? { ...rest, reservations: reservations.version === String(context.currentVersion)
+        ? resolveReservations(engine.geometryReader, reservations, engine.proposalEngine.version(),
+          environment?.getLayoutReservations?.() ?? null)
+        : retainReservationOwners(reservations, environment?.getLayoutReservations?.() ?? null) }
       : rest);
     return result('noop');
   }
