@@ -392,7 +392,7 @@ test('the worker-only layout reports no included reservation set', async () => {
 test('a reservation target answers unsupported on the worker-only editor without a worker read', async () => {
   const shell = await shellOf(await laidOut());
   const target = { kind: 'reservation', id: 'box' } as const;
-  const unsupported = { ok: false, failure: { code: 'unsupported', message: 'This layout reports no reservations' } };
+  const unsupported: DocxAnchorGeometryResult = { ok: false, failure: { code: 'unsupported', message: 'This layout reports no reservations' } };
   shell.plugin.requestTarget(target);
   const geometry = shell.plugin.geometry()!;
   expect(geometry.getAnchorGeometry(target)).toEqual(unsupported);
