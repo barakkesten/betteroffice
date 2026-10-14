@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { resolveReservations, validReservationsPayload } from './reservations';
 import * as queryModule from '../layout/render/displayListQueries';
 import * as rustQueries from '../layout/render/rustDisplayList';
 import type { DisplayPage, TextRunPrimitive } from '../layout/render/displayList';
@@ -239,8 +240,11 @@ function workerSelectionHooks(arm: CommandArm, frame: RetainedFrame, buildPages?
     editState: () => { throw new Error('Unused edit-state projection'); },
   });
   const source = readFileSync(new URL('./residentEngineWorker.ts', import.meta.url), 'utf8');
+  const reservationStart = source.indexOf('const appliedLayoutReservations =');
+  const reservations = source.slice(reservationStart, source.indexOf('\n/**', reservationStart));
   const binding = source.slice(source.indexOf('function bindResidentCommands('), source.indexOf('function replacementCommandInit('));
   const dependencies = {
+    resolveReservations, validReservationsPayload,
     session: {
       ...arm.engine, proposalEngine: { version: () => arm.engine.geometryReader.version() },
       selection: () => ({ anchor: arm.state.selection!.anchor, head: arm.state.selection!.focus }),
@@ -259,7 +263,7 @@ function workerSelectionHooks(arm: CommandArm, frame: RetainedFrame, buildPages?
     retainedPageByKey: (current: RetainedFrame, pageId: string) => retainedFramePageById(current, BigInt(pageId)),
   };
   return new Function(...Object.keys(dependencies),
-    new Bun.Transpiler({ loader: 'ts' }).transformSync(binding) +
+    new Bun.Transpiler({ loader: 'ts' }).transformSync(`${reservations}\n${binding}`) +
     '\nreturn { hooks: bindResidentCommands(init), install: (frame, revision) => { retainedFrame = frame; layoutRevision = revision; } };'
   )(...Object.values(dependencies)) as { hooks: ResidentCommandHooks; install: (frame: RetainedFrame, revision: number) => void };
 }
@@ -614,8 +618,11 @@ test('d2a_worker_vertical_navigation_builds_unbuilt_neighbours_before_chained_ty
     editState: () => { throw new Error('Unused edit-state projection'); },
   });
   const source = readFileSync(new URL('./residentEngineWorker.ts', import.meta.url), 'utf8');
+  const reservationStart = source.indexOf('const appliedLayoutReservations =');
+  const reservations = source.slice(reservationStart, source.indexOf('\n/**', reservationStart));
   const binding = source.slice(source.indexOf('function bindResidentCommands('), source.indexOf('function replacementCommandInit('));
   const dependencies = {
+    resolveReservations, validReservationsPayload,
     session: arm.engine, commandHooksFactory: factory,
     init: { layoutWithRegions: true, layoutInput: '{}', extras: '{}' } as ResidentCommandInitRequest,
     retainedFrame: windowed, retainedLayoutVersion: null, layoutRevision: 0, commandFrameChanges: null,
@@ -627,7 +634,7 @@ test('d2a_worker_vertical_navigation_builds_unbuilt_neighbours_before_chained_ty
     retainedPageByKey: (frame: RetainedFrame, pageId: string) => retainedFramePageById(frame, BigInt(pageId)),
   };
   const bind = () => new Function(...Object.keys(dependencies),
-    new Bun.Transpiler({ loader: 'ts' }).transformSync(binding) + '\nreturn bindResidentCommands(init);'
+    new Bun.Transpiler({ loader: 'ts' }).transformSync(`${reservations}\n${binding}`) + '\nreturn bindResidentCommands(init);'
   )(...Object.values(dependencies)) as ResidentCommandHooks;
   let hooks = bind();
   try {
