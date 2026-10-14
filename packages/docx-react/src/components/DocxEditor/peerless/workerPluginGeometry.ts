@@ -1,6 +1,6 @@
 import { createDisplayListQueries, effectiveZoom, loadRustDisplayListQueryEngine, type DisplayListQueries, type DisplayListRect } from '@betteroffice/docx/layout/render';
 import { createRenderedDomContext, type DisplayListPageProjector } from '@betteroffice/docx/plugin-api/RenderedDomContext';
-import type { ProposalGeometryTarget } from '@betteroffice/docx/yrs';
+import { anchorFailure, type ProposalGeometryTarget } from '@betteroffice/docx/yrs';
 import { placeRepeated, toOverlayRect } from '../../../plugins/geometry';
 import type { DocxAnchorGeometryResult, DocxAnchorRect, DocxGeometryTarget, DocxPluginGeometry, DocxPluginLayout, DocxPluginNavigation, DocxPluginSelection } from '../../../plugins/types';
 import type { createPeerlessShellController } from './shellController';
@@ -25,7 +25,7 @@ export function createWorkerPluginGeometry(controller: ReturnType<typeof createP
   };
   const requestTarget = (target: DocxGeometryTarget) => {
     const source = current;
-    if (!source || target.kind === 'proposal') return;
+    if (!source || target.kind === 'proposal' || target.kind === 'reservation') return;
     const key = keyOf(target);
     if (targets.has(key)) return;
     targets.set(key, null);
@@ -48,7 +48,7 @@ export function createWorkerPluginGeometry(controller: ReturnType<typeof createP
     const review = await controller.review();
     if (request !== generation || controller.getSnapshot().view?.geometry !== frame) return;
     const queries = createDisplayListQueries({ pages: frame.pages.map(page => page.displayPage!).filter(Boolean) }, native);
-    const layout: DocxPluginLayout = { id: `${view.identity.session}:${view.version}:${frame.frameEpoch}`, version: review.version, previewVersion: review.previewVersion, zoom, pageCount: frame.pages.length };
+    const layout: DocxPluginLayout = { id: `${view.identity.session}:${view.version}:${frame.frameEpoch}`, version: review.version, previewVersion: review.previewVersion, reservationsVersion: null, zoom, pageCount: frame.pages.length };
     const projector: DisplayListPageProjector = {
       projectRect(rect) {
         const page = frame.pages[rect.pageIndex]?.bounds;
@@ -99,6 +99,7 @@ export function createWorkerPluginGeometry(controller: ReturnType<typeof createP
         return shown() && result ? { ...result, layoutId: layout.id } : null;
       },
       getAnchorGeometry(target) {
+        if (target.kind === 'reservation') return anchorFailure('unsupported', 'This layout reports no reservations');
         if (!shown()) return unavailable();
         const expected = target.kind === 'range' ? target.version : (target.kind === 'paragraph' || target.kind === 'search') && 'version' in target.paragraph ? target.paragraph.version : layout.version;
         if (expected !== layout.version) return { ok: false, failure: { code: 'stale-version', message: 'The document changed after that version' } };

@@ -25,6 +25,7 @@ import { createResidentEngineSession, type ResidentEngineSession } from '@better
 import { storyAnchorsDocx } from '../../../plugins/__fixtures__/storyAnchorsDocx';
 import { createDocxPluginHost } from '../../../plugins/createDocxPluginHost';
 import { defineDocxPlugin } from '../../../plugins/defineDocxPlugin';
+import { scopePluginGeometry } from '../../../plugins/geometry';
 import { PluginOverlays } from '../../../plugins/PluginOverlays';
 import type { DocxAnchorGeometryResult, DocxGeometryTarget, DocxPluginGeometry } from '../../../plugins/types';
 import { createWorkerPluginGeometry } from './workerPluginGeometry';
@@ -190,6 +191,7 @@ async function shellOf({ engine, frame, window: built }: LaidOut, { zoom = 1, wi
   return {
     plugin,
     version,
+    reads,
     bounds: pages.map(({ bounds }) => bounds),
     async anchor(target: DocxGeometryTarget) {
       plugin.geometry()!.getAnchorGeometry(target);
@@ -380,4 +382,20 @@ test('pages released to unbuilt keep the parts their build paints across a frame
   expect(displayList.pages.map(({ unbuilt, header, footer, hfParts }) =>
     [unbuilt ?? false, ...(unbuilt ? [hfParts?.header ?? null, hfParts?.footer ?? null] : [header?.rId ?? null, footer?.rId ?? null])]))
     .toEqual(painted.map((parts, index) => [index < 3, ...parts]));
+});
+
+test('the worker-only layout reports no included reservation set', async () => {
+  const shell = await shellOf(await laidOut());
+  expect(shell.plugin.layout()!.reservationsVersion).toBeNull();
+});
+
+test('a reservation target answers unsupported on the worker-only editor without a worker read', async () => {
+  const shell = await shellOf(await laidOut());
+  const target = { kind: 'reservation', id: 'box' } as const;
+  const unsupported = { ok: false, failure: { code: 'unsupported', message: 'This layout reports no reservations' } };
+  shell.plugin.requestTarget(target);
+  const geometry = shell.plugin.geometry()!;
+  expect(geometry.getAnchorGeometry(target)).toEqual(unsupported);
+  expect(scopePluginGeometry(geometry, 'plugin').getAnchorGeometry(target)).toEqual(unsupported);
+  expect(shell.reads).toHaveLength(0);
 });
