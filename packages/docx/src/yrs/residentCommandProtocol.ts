@@ -264,6 +264,8 @@ export interface DocxCommandFramePayload {
   documentVersion?: string;
   layoutMeta?: LayoutMetaV1;
   layoutProvisional?: boolean;
+  finalizedPages?: number;
+  documentWidth?: number;
   echoContext?: DocxCommandEchoContext;
   stagedPresentation?: DocxCommandStagedPresentation;
 }
@@ -291,6 +293,8 @@ export interface ResidentCommandInitRequest {
   extras: string;
   displayWindow?: [number, number];
   retainBuiltPages?: boolean;
+  provisionalPages?: number;
+  rasterScale?: number;
 }
 
 export type ResidentCommandInitReply = DocxCommandAck &
@@ -377,6 +381,7 @@ export interface ResidentCommandViewportRequest {
   start: number;
   end: number;
   frameEpoch: number;
+  rasterScale?: number;
 }
 
 export interface ResidentCommandClient {
