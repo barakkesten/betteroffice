@@ -183,13 +183,13 @@ function bindResidentCommands(init: ResidentCommandInitRequest): ResidentCommand
   };
   const layoutWithPreview = () => {
     const input = JSON.parse(init.layoutWithRegions ? init.layoutInput : layoutInput);
+    const owner = init.layoutWithRegions ? input : input.workerOwned;
     const snapshot = registry.snapshot();
     const preview = proposalRevisionPreview(snapshot);
-    if (preview !== undefined || input.renderEnv?.revisionPreview !== undefined) {
-      input.renderEnv = { ...input.renderEnv };
-      if (preview) input.renderEnv.revisionPreview = preview;
-      else delete input.renderEnv.revisionPreview;
-      if (!init.layoutWithRegions) input.workerOwned = { ...input.workerOwned, renderEnv: input.renderEnv };
+    if (preview !== undefined || owner.renderEnv?.revisionPreview !== undefined) {
+      owner.renderEnv = { ...owner.renderEnv };
+      if (preview) owner.renderEnv.revisionPreview = preview;
+      else delete owner.renderEnv.revisionPreview;
     }
     if (init.layoutWithRegions) engine.layoutDocumentWithRegionsRetained(JSON.stringify(input));
     else engine.layoutDocumentJson(JSON.stringify(input));
