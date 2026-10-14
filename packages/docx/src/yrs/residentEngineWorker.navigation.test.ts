@@ -82,7 +82,8 @@ function splitRowWorker(direction: 'up' | 'down', queryEngine?: RustDisplayListQ
     source.indexOf('function replacementCommandInit('));
   const dependencies = {
     resolveReservations, validReservationsPayload,
-    sessionFonts: null, ResidentSessionFonts, scope: {},
+    sessionFonts: null, ResidentSessionFonts, scope: {}, proposals: null, resetResidentObjectHandles() {},
+    createProposalRegistry: () => ({ snapshot: () => ({ previewVersion: 0, proposals: [] }) }),
     session: {
       proposalEngine: { version: () => '0' }, selection: () => ({ anchor: focus, head: focus }),
       setSelection: () => {},
