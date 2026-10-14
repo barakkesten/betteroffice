@@ -30,6 +30,7 @@ import { resetEngineChoiceForTests, setMissingWorkerCapabilitiesForTests } from 
 
 import { createInputAdmission } from './inputAdmission';
 import { createPeerlessCommandBinding } from './commandBinding';
+import { inputs, proposalHost } from './workerProposalHost.testing';
 
 const ownsDom = !GlobalRegistrator.isRegistered;
 if (ownsDom) GlobalRegistrator.register();
@@ -105,6 +106,7 @@ class FakeWorker {
         : message.read.kind === 'sectionProperties' ? { version: 'worker-version', sections: [{ section: 'final', properties: { marginLeft: 2160 } }], paragraphs: [] }
         : message.read.kind === 'searchText' ? { matches: [], carried: -1 }
         : message.read.kind === 'rangeHighlights' ? null
+        : message.read.kind === 'toolbarMetadata' ? { styles: [], fontFamilies: [] }
         : message.read.kind === 'navigationTarget' ? { loc: { story: 'body', paraId: 'heading', offset: 0 }, position: 1 }
         : message.read.kind === 'listStories' ? { ok: true, version: 'worker-version', stories: [{ story: 'hf:rId3', kind: 'header', root: 'hf:rId3' }] }
         : message.read.kind === 'readStories' ? { ok: true, version: 'worker-version', view: 'accepted', stories: [{ story: 'hf:rId3', ok: true, paragraphs: [] }], truncated: false }
@@ -286,6 +288,80 @@ afterEach(() => {
 afterAll(async () => {
   await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
   if (ownsDom) await GlobalRegistrator.unregister();
+});
+
+test('a mounted host receives four proposals and a versioned plugin proposal event', async () => {
+  const h = proposalHost();
+  const ref = createRef<DocxEditorRef>();
+  const events: { generation: string; version: string; previewVersion: number }[] = [];
+  const snapshots: yrs.DocxProposalSnapshot[] = [];
+  const plugin = defineDocxPlugin({ id: 'host-proposals', createState: () => null,
+    async onEvent(context, event) {
+      if (event.type !== 'proposal-change') return;
+      events.push(event);
+      snapshots.push(await ref.current!.getProposals());
+      expect(context.snapshot.version).toBe(event.version);
+    },
+  });
+  const readAt = spyOn(yrs.ResidentEngineWorkerClient.prototype, 'documentReadAt').mockImplementation(h.readAt as never);
+  restorers.push(() => readAt.mockRestore());
+  const view = render(<DocxEditor {...peerlessProps} ref={ref} allowHostProposals plugins={[plugin]} showToolbar={false} />);
+  await waitFor(() => expect(view.getByTestId('peerless-paged-editor').dataset.opened).toBe('true'));
+  await act(async () => { surface.mock.calls[0]![0].onReady!(h.binding); });
+  await act(async () => {
+    expect(await ref.current!.proposeChanges({ expectVersion: 'native-0', proposals: inputs })).toEqual({ ok: true, snapshot: h.snapshot() });
+    expect(await ref.current!.getProposals()).toEqual(h.snapshot());
+  });
+  await waitFor(() => expect(snapshots.at(-1)?.proposals).toHaveLength(4));
+  expect(events.at(-1)).toMatchObject({ generation: expect.any(String), version: h.snapshot().version, previewVersion: h.snapshot().previewVersion });
+  view.unmount();
+  h.controller.dispose();
+});
+
+test('worker host proposal sidebar cards follow the public visibility prop', async () => {
+  const h = proposalHost();
+  await h.submit('propose', { proposals: inputs }, {}).ack;
+  h.binding.viewStore.getSnapshot().geometry!.pages = [0, 1].map(pageIndex => ({
+    page: { pageId: String(pageIndex), pageIndex }, bounds: { x: 0, y: pageIndex * 820, width: 600, height: 800 },
+    transform: [1, 0, 0, 1, 0, pageIndex * 820] as const,
+  }));
+  const readAt = spyOn(yrs.ResidentEngineWorkerClient.prototype, 'documentReadAt').mockImplementation(h.readAt as never);
+  restorers.push(() => readAt.mockRestore());
+  const element = (showHostProposalsInSidebar: boolean) => <DocxEditor {...peerlessProps} allowHostProposals
+    commentsSidebarOpen showHostProposalsInSidebar={showHostProposalsInSidebar} showToolbar={false} />;
+  const view = render(element(false));
+  await waitFor(() => expect(view.getByTestId('peerless-paged-editor').dataset.opened).toBe('true'));
+  await act(async () => { surface.mock.calls[0]![0].onReady!(h.binding); });
+  expect(view.container.querySelectorAll('.docx-tracked-change-card')).toHaveLength(0);
+  view.rerender(element(true));
+  await waitFor(() => expect(view.container.querySelectorAll('.docx-tracked-change-card')).toHaveLength(4));
+  expect(view.container.textContent).toContain('Reviewer');
+  view.rerender(element(false));
+  await waitFor(() => expect(view.container.querySelectorAll('.docx-tracked-change-card')).toHaveLength(0));
+  view.unmount();
+  h.controller.dispose();
+});
+
+test('worker host proposal cards alone leave an uncontrolled sidebar closed', async () => {
+  const h = proposalHost();
+  await h.submit('propose', { proposals: inputs }, {}).ack;
+  h.binding.viewStore.getSnapshot().geometry!.pages = [0, 1].map(pageIndex => ({
+    page: { pageId: String(pageIndex), pageIndex }, bounds: { x: 0, y: pageIndex * 820, width: 600, height: 800 },
+    transform: [1, 0, 0, 1, 0, pageIndex * 820] as const,
+  }));
+  const readAt = spyOn(yrs.ResidentEngineWorkerClient.prototype, 'documentReadAt').mockImplementation(h.readAt as never);
+  restorers.push(() => readAt.mockRestore());
+  const element = (open?: boolean) => <DocxEditor {...peerlessProps} allowHostProposals showHostProposalsInSidebar
+    {...(open === undefined ? {} : { commentsSidebarOpen: open })} showToolbar={false} />;
+  const view = render(element(true));
+  await waitFor(() => expect(view.getByTestId('peerless-paged-editor').dataset.opened).toBe('true'));
+  await act(async () => { surface.mock.calls[0]![0].onReady!(h.binding); });
+  await waitFor(() => expect(view.container.querySelectorAll('.docx-tracked-change-card')).toHaveLength(4));
+  view.rerender(element());
+  await act(async () => {});
+  expect(view.container.querySelectorAll('.docx-tracked-change-card')).toHaveLength(0);
+  view.unmount();
+  h.controller.dispose();
 });
 
 test('d8a_peerless_mount_creates_no_main_document', async () => {
@@ -594,6 +670,59 @@ test('worker print builds all pages and invokes the host after complete renderin
   expect(popup.document.querySelectorAll('img')).toHaveLength(3);
   expect(popup.print).toHaveBeenCalledTimes(1);
   expect(onPrint).toHaveBeenCalledTimes(1);
+});
+
+test('overlapping prints during a provisional prefix both capture the whole document', async () => {
+  const ref = createRef<DocxEditorRef>();
+  const onError = mock(() => {});
+  const popups = [0, 1].map(() => ({ document: document.implementation.createHTMLDocument(), opener: null, closed: false,
+    focus() {}, print: mock(() => {}), close: mock(() => {}) }));
+  let opened = 0;
+  const open = spyOn(window, 'open').mockImplementation(() => popups[opened++] as unknown as Window);
+  const context = spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage() {} } as unknown as CanvasRenderingContext2D);
+  const png = spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,cGFnZQ==');
+  let release!: () => void;
+  const completing = new Promise<void>((resolve) => { release = resolve; });
+  const complete = spyOn(yrs.ResidentEngineWorkerClient.prototype, 'completeLayout').mockImplementation(async () => {
+    await completing;
+    return null as never;
+  });
+  const geometry = (provisional: boolean): PeerlessFrameGeometry => ({
+    identity: { session: 'print', incarnation: 1, epoch: 1 }, coversThroughSeq: 0,
+    frameEpoch: provisional ? 1 : 2, layoutRevision: 1, layoutProvisional: provisional, caret: null, selectionRects: [],
+    pages: Array.from({ length: provisional ? 3 : 5 }, (_, pageIndex) => ({
+      page: { pageId: String(pageIndex + 1), pageIndex }, bounds: { x: 0, y: pageIndex * 100, width: 200, height: 100 },
+      transform: [1, 0, 0, 1, 0, 0],
+    })),
+  });
+  const build = spyOn(yrs.ResidentEngineWorkerClient.prototype, 'buildPages').mockImplementation(async (indices) => {
+    binding!.viewStore.getSnapshot().geometry = geometry(false);
+    surface.mock.calls.at(-1)![0].sessionOptions.prepareGeometry({ ...commandFrame(2), payload: {
+      ...commandFrame(2).payload, stagedPresentation: { frameEpoch: 2, pages: indices.map((pageIndex) => ({
+        page: { pageId: String(pageIndex + 1), pageIndex }, frameEpoch: 2,
+        bitmap: { width: 200, height: 100, close() {} } as ImageBitmap,
+      })) },
+    } });
+    return null as never;
+  });
+  restorers.push(() => open.mockRestore(), () => context.mockRestore(), () => png.mockRestore(),
+    () => complete.mockRestore(), () => build.mockRestore());
+  const view = render(<DocxEditor {...peerlessProps} ref={ref} onError={onError} />);
+  await waitFor(() => expect(view.getByTestId('peerless-paged-editor').dataset.opened).toBe('true'));
+  binding!.viewStore.getSnapshot().geometry = geometry(true);
+  await act(async () => {
+    const first = ref.current!.commands.execute('print', null);
+    const second = ref.current!.commands.execute('print', null);
+    await waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
+    release();
+    const outcomes = await Promise.all([first, second]);
+    expect(outcomes).toMatchObject([{ ok: true }, { ok: true }]);
+  });
+  expect(onError).not.toHaveBeenCalled();
+  for (const popup of popups) {
+    expect(popup.document.querySelectorAll('img')).toHaveLength(5);
+    expect(popup.print).toHaveBeenCalledTimes(1);
+  }
 });
 
 test('worker context menu reads selection and table context without a session', async () => {
@@ -975,7 +1104,7 @@ test('worker shell reserves the widest scaled page and retains host styling', as
       transform: [1, 0, 0, 1, 0, 0],
     })) };
   view.rerender(<DocxEditor {...peerlessProps} showToolbar={false} initialZoom={1.5} showOutline
-    className="host-editor" style={{ height: 300, width: 400 }} pluginSidebarItems={[{ id: 'card', hidden: false } as never]} />);
+    className="host-editor" style={{ height: 300, width: 400 }} pluginSidebarItems={[{ id: 'card', anchorPos: 0, hidden: false, render: () => null }]} />);
   await waitFor(() => {
     const root = view.getByTestId('docx-editor');
     expect(root.classList.contains('host-editor')).toBe(true);
@@ -1192,4 +1321,21 @@ test('controlled viewing mode locks admission before parent layout input', async
   view.rerender(<Parent mode="viewing" input />);
   expect(submitted.result).toEqual({ status: 'ignored', reason: 'read-only' });
   expect(workers[0].text).toBe('');
+});
+
+
+test('worker rulers show native section values and the first-line indent control', async () => {
+  const view = render(<DocxEditor {...peerlessProps} showRuler />);
+  await waitFor(() => expect(binding).toBeDefined());
+  await waitFor(() => expect(requests.some(request => request.type === 'documentRead' && request.read.kind === 'sectionProperties')).toBe(true));
+  expect(view.getByRole('slider', { name: 'First line indent' })).toBeDefined();
+});
+
+test('worker-only opens request the font-ready certified initial display window', async () => {
+  render(<DocxEditor {...peerlessProps} showToolbar={false} />);
+  await waitFor(() => expect(requests.some(request => request.type === 'commandInit')).toBe(true));
+  const request = requests.find(request => request.type === 'commandInit');
+  expect(request?.type === 'commandInit' && request.request).toMatchObject({
+    provisionalPages: 3, displayWindow: [0, 3], layoutWithRegions: true,
+  });
 });
