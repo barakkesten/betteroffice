@@ -1,5 +1,67 @@
 # @betteroffice/xlsx-react
 
+## 0.4.0
+
+### Minor Changes
+
+- 14919ef: Editable sessions with `experimentalWorkerOpen` now use the worker-owned editor and show pending cell text before edits commit. The flag remains experimental and opt-in; the default editor is unchanged.
+- 307a34c: Adds `proposeChanges` to the default worker editor API so hosts can stage tracked cell edits for review. Hosts opt in by calling the method and can accept or reject proposals through `commands`.
+- 03f4c75: Enables `collaboration` and remote presence with `XlsxEditor asyncApi`, opt-in, through `XlsxAsyncEditorApi.collaboration` and `createAsyncCollaborationReplica`. Adds experimental `XlsxAsyncEditorApi.recoverySave`, which keeps accepted edits, undo and redo across worker failures and leaves the editor read-only.
+- b7856d8: Adds opt-in `onSaveRequest` to intercept saving, plus `flushPendingInput` and `getPositionAtPoint` on the editor API to await input and query cells under a pointer.
+- 9fe58b1: Makes worker-only editing and the async `onReady` API the default. Adds deprecated `legacySyncApi` for the sync hybrid runtime, removed in 0.6.0, and keeps deprecated `experimentalWorkerOpen={false}` for in-thread editing; both opt-ins warn once.
+- f7cf3ff: `XlsxEditor` with `readOnly` and `experimentalWorkerOpen` opens the workbook in a worker, which builds the frames the page paints, keeping the page responsive while large workbooks open. Off by default.
+- 03f4c75: Enables `plugins` in `<XlsxEditor asyncApi>`, including reads, edit batches, panels, overlays, and selection events. Opt-in through `asyncApi`.
+
+### Patch Changes
+
+- a97e75c: Fixes toolbar overflow crashes with "Maximum update depth exceeded" when toolbar groups change width as items move into More, such as when a Content Security Policy blocks the package stylesheet.
+- 1c20b14: Keeps saves and plugin edits ordered through completed IME input and invalid-entry refusals. Rejects sparse and oversized edit batches before allocation.
+- 03f4c75: Preserves untouched cells and queued edits when saving or recovering with opt-in `asyncApi`. Honors `onSaveRequest`, loads the async editor separately, and reports missing canvas support or legacy API access with directed errors, including `XlsxAsyncApiSyncAccessError`.
+- 1c20b14: Preserves completed cell and formula input in recovery saves when the worker fails while Save is queued.
+- 1c20b14: Keeps each completed IME input and its Save boundary when a prior read delays editing.
+- 9fe58b1: Preserves text and caret movement during F2 cell editing, including saving, navigation, IME input, and `readOnly` changes in the default editor.
+- 1c20b14: Preserves focus in host dialogs while completed IME input waits for an earlier read before saving.
+- 793e4b8: Toggling `readOnly` on an `experimentalWorkerOpen` editor keeps the open workbook and its unsaved edits instead of reopening the file.
+- 451cfb9: Fixes editing in apps that install the XLSX packages so it no longer fails with "Workbook edit peer does not support retained operations". Recovery and worker cell previews also work correctly.
+- 1c20b14: Keeps newer proposal previews received through collaboration when an earlier refresh finishes later.
+- 1c20b14: Expands the active-cell outline across merged cells and refreshes proposal previews after edits, undo, and redo. Restores keyboard focus after IME toolbar commands while preserving focus in host dialogs.
+- 3e14897: Plugins on the worker-owned `XlsxEditor` see the opening selection as soon as the workbook opens, instead of none until the user moves the selection.
+- Updated dependencies [8aa1269]
+- Updated dependencies [1ed2ad0]
+- Updated dependencies [14919ef]
+- Updated dependencies [8aa1269]
+- Updated dependencies [03f4c75]
+- Updated dependencies [1c20b14]
+- Updated dependencies [03f4c75]
+- Updated dependencies [d920761]
+- Updated dependencies [4d0cbda]
+- Updated dependencies [97c818d]
+- Updated dependencies [2f7efc6]
+- Updated dependencies [11db7d8]
+- Updated dependencies [b0c67e0]
+- Updated dependencies [03f4c75]
+- Updated dependencies [355675f]
+- Updated dependencies [f2042f0]
+- Updated dependencies [1fef3e9]
+- Updated dependencies [3f8c882]
+- Updated dependencies [30bf7b2]
+- Updated dependencies [ce4053e]
+- Updated dependencies [400ac5e]
+- Updated dependencies [341ab6e]
+- Updated dependencies [451cfb9]
+- Updated dependencies [c8a1e86]
+- Updated dependencies [accc7a0]
+- Updated dependencies [d402284]
+- Updated dependencies [f98fc39]
+- Updated dependencies [3e47c79]
+- Updated dependencies [f7cf3ff]
+- Updated dependencies [611d365]
+- Updated dependencies [37c7e36]
+- Updated dependencies [03f4c75]
+- Updated dependencies [a0c86f2]
+  - @betteroffice/xlsx@0.4.0
+  - @betteroffice/xlsx-i18n@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
