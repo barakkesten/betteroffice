@@ -325,6 +325,45 @@ test('stale render environment reservations retain listed owners and clear remov
   }
 }, TIMEOUT);
 
+test.each([true, false])('render environment reservations survive a review preview relayout (regions=%s)', async (layoutWithRegions) => {
+  const { client, initial, point } = await openWorker({ layoutWithRegions });
+  try {
+    let frame = applyFrameDeltaOwned(null, decodeFrameDelta(initial.frame!.payload.frame));
+    const boxes = () => frame.displayList.pages.flatMap((page) => page.reservations ?? []);
+    const set = await client.edit(intent(1, 0, 'setRenderEnvironment', {
+      themeColors: {}, showHiddenText: false, reservations: { version: '0', sets: [{ owner: 'plugin', items: [{
+        id: 'box', kind: 'inline', width: 40, height: 20,
+        anchor: { kind: 'range', version: '0', range: {
+          story: 'body', view: 'accepted',
+          start: { paraId: point.paraId, offset: 0 }, end: { paraId: point.paraId, offset: 0 },
+        } },
+      }] }] },
+    } as never));
+    expect(set.outcomes[0]?.status).toBe('noop');
+    frame = applyFrameDeltaOwned(frame, decodeFrameDelta(set.frame!.payload.frame));
+    expect(boxes()).toEqual([expect.objectContaining({ owner: 'plugin', id: 'box', width: 40 })]);
+
+    const ids = await client.documentRead({ kind: 'paragraphIdentities' });
+    const proposed = await client.edit(intent(2, 0, 'propose', { expectVersion: ids.version, proposals: [{
+      id: 'one', op: 'replaceText', paragraph: ids.value.paragraphs[0]!.session!, search: 'Seed', replaceWith: 'Bud',
+      suggest: { author: 'Ada', date: '2026-01-01' },
+    }] }));
+    expect(proposed.outcomes[0]?.status).toBe('applied');
+    frame = applyFrameDeltaOwned(null, decodeFrameDelta((await client.requestFullFrame()).frame!.payload.frame));
+    expect(boxes()).toEqual([expect.objectContaining({ owner: 'plugin', id: 'box', width: 40 })]);
+
+    const review = await client.documentRead({ kind: 'reviewSnapshot' });
+    const previewed = await client.edit(intent(3, 1, 'setProposalStates', {
+      expectVersion: review.version, expectPreviewVersion: review.value!.proposals.previewVersion,
+      changes: [{ id: 'one', state: 'accepted' }],
+    }));
+    expect(previewed.outcomes[0]?.status).toBe('applied');
+    frame = applyFrameDeltaOwned(null, decodeFrameDelta((await client.requestFullFrame()).frame!.payload.frame));
+    expect(frameText(frame)).toBe('Bud');
+    expect(boxes()).toEqual([expect.objectContaining({ owner: 'plugin', id: 'box', width: 40 })]);
+  } finally { client.destroy(); }
+}, TIMEOUT);
+
 test('the worker and a main-thread session lay out one reservation set identically', async () => {
   const bodyXml = '<w:p w14:paraId="00000001"><w:r><w:t>Alpha beta gamma</w:t></w:r></w:p>' +
     '<w:p w14:paraId="00000002"><w:r><w:t>Next</w:t></w:r></w:p>';
